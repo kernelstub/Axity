@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::error::{AxityError, Span};
+use crate::error::AxityError;
 use crate::token::{Token, TokenKind};
 use crate::types::Type;
 
@@ -24,9 +24,49 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         while self.peek().kind != TokenKind::Eof {
             if self.peek().kind == TokenKind::Fn { items.push(Item::Func(self.function()?)); }
+            else if self.peek().kind == TokenKind::Import {
+                let it = self.import_item()?;
+                items.push(it);
+            }
+            else if self.peek().kind == TokenKind::Class { items.push(Item::Class(self.class_def()?)); }
             else { items.push(Item::Stmt(self.statement()?)); }
         }
         Ok(Program { items })
+    }
+    fn import_item(&mut self) -> Result<Item, AxityError> {
+        let tok = self.expect(TokenKind::Import)?;
+        let path = match self.next().kind.clone() {
+            TokenKind::StringLit(s) => s,
+            _ => return Err(AxityError::parse("expected string path", tok.span))
+        };
+        if self.peek().kind == TokenKind::Semicolon { self.next(); }
+        Ok(Item::Import(path, tok.span))
+    }
+    fn class_def(&mut self) -> Result<ClassDef, AxityError> {
+        let ct = self.expect(TokenKind::Class)?;
+        let name = match self.next().kind.clone() { TokenKind::Ident(s) => s, _ => return Err(AxityError::parse("expected class name", ct.span)) };
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        loop {
+            match self.peek().kind.clone() {
+                TokenKind::Let => {
+                    let sp = self.next().span.clone();
+                    let fname = match self.next().kind.clone() { TokenKind::Ident(s) => s, _ => return Err(AxityError::parse("expected field name", sp)) };
+                    self.expect(TokenKind::Colon)?;
+                    let ty = self.parse_type()?;
+                    self.expect(TokenKind::Semicolon)?;
+                    fields.push(Field{ name: fname, ty, span: sp });
+                }
+                TokenKind::Fn => {
+                    methods.push(self.function()?);
+                }
+                TokenKind::RBrace => { break; }
+                _ => return Err(AxityError::parse("unexpected token in class", self.peek().span.clone()))
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(ClassDef{ name, fields, methods, span: ct.span })
     }
     fn function(&mut self) -> Result<Function, AxityError> {
         let fn_tok = self.expect(TokenKind::Fn)?;
@@ -35,7 +75,11 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if self.peek().kind != TokenKind::RParen {
             loop {
-                let pname = match self.next().kind.clone() { TokenKind::Ident(s) => s, _ => return Err(AxityError::parse("expected identifier", self.peek().span.clone())) };
+                let pname = match self.next().kind.clone() {
+                    TokenKind::Ident(s) => s,
+                    TokenKind::SelfKw => "self".to_string(),
+                    _ => return Err(AxityError::parse("expected identifier", self.peek().span.clone()))
+                };
                 self.expect(TokenKind::Colon)?;
                 let ty = self.parse_type()?;
                 params.push(Param{ name: pname, ty, span: fn_tok.span.clone() });
@@ -53,7 +97,24 @@ impl<'a> Parser<'a> {
     }
     fn parse_type(&mut self) -> Result<Type, AxityError> {
         let t = self.next().clone();
-        match t.kind { TokenKind::IntType => Ok(Type::Int), _ => Err(AxityError::parse("unknown type", t.span)) }
+        match t.kind {
+            TokenKind::IntType => Ok(Type::Int),
+            TokenKind::StringType => Ok(Type::String),
+            TokenKind::ArrayKw => {
+                self.expect(TokenKind::Less)?;
+                let inner = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                Ok(Type::Array(Box::new(inner)))
+            }
+            TokenKind::MapKw => {
+                self.expect(TokenKind::Less)?;
+                let inner = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                Ok(Type::Map(Box::new(inner)))
+            }
+            TokenKind::Ident(ref s) => Ok(Type::Class(s.clone())),
+            _ => Err(AxityError::parse("unknown type", t.span))
+        }
     }
     fn statement(&mut self) -> Result<Stmt, AxityError> {
         match self.peek().kind.clone() {
@@ -66,6 +127,43 @@ impl<'a> Parser<'a> {
                 let init = self.expr()?;
                 self.expect(TokenKind::Semicolon)?;
                 Ok(Stmt::Let{ name, ty, init, span: lt })
+            }
+            TokenKind::Match => {
+                let sp = self.next().span.clone();
+                let e = self.expr()?;
+                self.expect(TokenKind::LBrace)?;
+                let mut arms = Vec::new();
+                let mut default = None;
+                while self.peek().kind != TokenKind::RBrace {
+                    if self.peek().kind == TokenKind::Case {
+                        self.next();
+                        let pat = match self.peek().kind.clone() {
+                            TokenKind::IntLit(v) => { let t = self.next().clone(); Pattern::PInt(v) }
+                            TokenKind::StringLit(ref s) => { let t = self.next().clone(); Pattern::PStr(s.clone()) }
+                            TokenKind::TrueKw => { self.next(); Pattern::PBool(true) }
+                            TokenKind::FalseKw => { self.next(); Pattern::PBool(false) }
+                            _ => return Err(AxityError::parse("invalid pattern", self.peek().span.clone()))
+                        };
+                        self.expect(TokenKind::Colon)?;
+                        self.expect(TokenKind::LBrace)?;
+                        let mut body = Vec::new();
+                        while self.peek().kind != TokenKind::RBrace { body.push(self.statement()?); }
+                        self.expect(TokenKind::RBrace)?;
+                        arms.push(MatchArm{ pat, body });
+                    } else if self.peek().kind == TokenKind::Default {
+                        self.next();
+                        self.expect(TokenKind::Colon)?;
+                        self.expect(TokenKind::LBrace)?;
+                        let mut body = Vec::new();
+                        while self.peek().kind != TokenKind::RBrace { body.push(self.statement()?); }
+                        self.expect(TokenKind::RBrace)?;
+                        default = Some(body);
+                    } else {
+                        return Err(AxityError::parse("expected case/default", self.peek().span.clone()));
+                    }
+                }
+                self.expect(TokenKind::RBrace)?;
+                Ok(Stmt::Match{ expr: e, arms, default, span: sp })
             }
             TokenKind::Print => {
                 let sp = self.next().span.clone();
@@ -84,39 +182,111 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RBrace)?;
                 Ok(Stmt::While{ cond, body, span: sp })
             }
+            TokenKind::If => {
+                let sp = self.next().span.clone();
+                let cond = self.expr()?;
+                self.expect(TokenKind::LBrace)?;
+                let mut then_body = Vec::new();
+                while self.peek().kind != TokenKind::RBrace { then_body.push(self.statement()?); }
+                self.expect(TokenKind::RBrace)?;
+                let mut else_body = Vec::new();
+                if self.peek().kind == TokenKind::Else {
+                    self.next();
+                    self.expect(TokenKind::LBrace)?;
+                    while self.peek().kind != TokenKind::RBrace { else_body.push(self.statement()?); }
+                    self.expect(TokenKind::RBrace)?;
+                }
+                Ok(Stmt::If{ cond, then_body, else_body, span: sp })
+            }
             TokenKind::Return => {
                 let sp = self.next().span.clone();
                 let e = self.expr()?;
                 self.expect(TokenKind::Semicolon)?;
                 Ok(Stmt::Return{ expr: e, span: sp })
             }
-            TokenKind::Ident(_) => {
-                let name = if let TokenKind::Ident(s) = self.next().kind.clone() { s } else { unreachable!() };
+            TokenKind::Ident(_) | TokenKind::SelfKw => {
+                let start = self.next().clone();
+                let mut base = match start.kind {
+                    TokenKind::Ident(ref s) => Expr::Var(s.clone(), start.span.clone()),
+                    TokenKind::SelfKw => Expr::Var("self".to_string(), start.span.clone()),
+                    _ => unreachable!()
+                };
+                while self.peek().kind == TokenKind::Dot || self.peek().kind == TokenKind::LBracket {
+                    if self.peek().kind == TokenKind::Dot {
+                        self.next();
+                        let fld = match self.next().kind.clone() { TokenKind::Ident(s) => s, _ => return Err(AxityError::parse("expected member name", self.peek().span.clone())) };
+                        if self.peek().kind == TokenKind::LParen {
+                            self.expect(TokenKind::LParen)?;
+                            let mut args = Vec::new();
+                            if self.peek().kind != TokenKind::RParen {
+                                loop { args.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
+                            }
+                            self.expect(TokenKind::RParen)?;
+                            base = Expr::MethodCall{ object: Box::new(base), name: fld, args, span: start.span.clone() };
+                        } else {
+                            base = Expr::Member{ object: Box::new(base), field: fld, span: start.span.clone() };
+                        }
+                    } else {
+                        self.expect(TokenKind::LBracket)?;
+                        let idx = self.expr()?;
+                        self.expect(TokenKind::RBracket)?;
+                        base = Expr::Index{ array: Box::new(base), index: Box::new(idx), span: start.span.clone() };
+                    }
+                }
                 if self.peek().kind == TokenKind::Assign {
                     let sp = self.next().span.clone();
                     let e = self.expr()?;
                     self.expect(TokenKind::Semicolon)?;
-                    Ok(Stmt::Assign{ name, expr: e, span: sp })
+                    match base {
+                        Expr::Member{ object, field, .. } => Ok(Stmt::MemberAssign{ object: *object, field, expr: e, span: sp }),
+                        Expr::Var(name, _) => Ok(Stmt::Assign{ name, expr: e, span: sp }),
+                        _ => Err(AxityError::parse("invalid assignment target", sp))
+                    }
                 } else if self.peek().kind == TokenKind::LParen {
                     self.expect(TokenKind::LParen)?;
                     let mut args = Vec::new();
                     if self.peek().kind != TokenKind::RParen {
-                        loop {
-                            args.push(self.expr()?);
-                            if self.peek().kind == TokenKind::Comma { self.next(); } else { break; }
-                        }
+                        loop { args.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
                     }
                     self.expect(TokenKind::RParen)?;
                     self.expect(TokenKind::Semicolon)?;
-                    Ok(Stmt::Print{ expr: Expr::Call{ name, args, span: self.peek().span.clone() }, span: self.peek().span.clone() })
+                    let name = match start.kind {
+                        TokenKind::Ident(name) => name,
+                        TokenKind::SelfKw => "self".to_string(),
+                        _ => unreachable!()
+                    };
+                    Ok(Stmt::Expr(Expr::Call{ name, args, span: self.peek().span.clone() }))
                 } else {
-                    Err(AxityError::parse("invalid statement", self.peek().span.clone()))
+                    self.expect(TokenKind::Semicolon)?;
+                    Ok(Stmt::Expr(base))
                 }
             }
             _ => Err(AxityError::parse("unexpected token in statement", self.peek().span.clone()))
         }
     }
-    fn expr(&mut self) -> Result<Expr, AxityError> { self.expr_eq() }
+    fn expr(&mut self) -> Result<Expr, AxityError> { self.expr_or() }
+    fn expr_or(&mut self) -> Result<Expr, AxityError> {
+        let mut e = self.expr_and()?;
+        loop {
+            if self.peek().kind == TokenKind::OrOr {
+                let sp = self.next().span.clone();
+                let r = self.expr_and()?;
+                e = Expr::Binary{ op: BinOp::Or, left: Box::new(e), right: Box::new(r), span: sp };
+            } else { break; }
+        }
+        Ok(e)
+    }
+    fn expr_and(&mut self) -> Result<Expr, AxityError> {
+        let mut e = self.expr_eq()?;
+        loop {
+            if self.peek().kind == TokenKind::AndAnd {
+                let sp = self.next().span.clone();
+                let r = self.expr_eq()?;
+                e = Expr::Binary{ op: BinOp::And, left: Box::new(e), right: Box::new(r), span: sp };
+            } else { break; }
+        }
+        Ok(e)
+    }
     fn expr_eq(&mut self) -> Result<Expr, AxityError> {
         let mut e = self.expr_rel()?;
         loop {
@@ -149,18 +319,48 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
     fn expr_mul(&mut self) -> Result<Expr, AxityError> {
-        let mut e = self.expr_primary()?;
+        let mut e = self.expr_unary()?;
         loop {
             let k = self.peek().kind.clone();
             let op = match k { TokenKind::Star => Some(BinOp::Mul), TokenKind::Slash => Some(BinOp::Div), _ => None };
-            if let Some(op) = op { let sp = self.next().span.clone(); let r = self.expr_primary()?; e = Expr::Binary{ op, left: Box::new(e), right: Box::new(r), span: sp }; } else { break; }
+            if let Some(op) = op { let sp = self.next().span.clone(); let r = self.expr_unary()?; e = Expr::Binary{ op, left: Box::new(e), right: Box::new(r), span: sp }; } else { break; }
         }
         Ok(e)
+    }
+    fn expr_unary(&mut self) -> Result<Expr, AxityError> {
+        if self.peek().kind == TokenKind::Bang {
+            let sp = self.next().span.clone();
+            let e = self.expr_unary()?;
+            Ok(Expr::UnaryNot{ expr: Box::new(e), span: sp })
+        } else {
+            self.expr_primary()
+        }
     }
     fn expr_primary(&mut self) -> Result<Expr, AxityError> {
         let t = self.next().clone();
         match t.kind {
             TokenKind::IntLit(v) => Ok(Expr::Int(v, t.span)),
+            TokenKind::StringLit(ref s) => Ok(Expr::Str(s.clone(), t.span)),
+            TokenKind::New => {
+                let name = match self.next().kind.clone() { TokenKind::Ident(s) => s, _ => return Err(AxityError::parse("expected class name", t.span)) };
+                let mut args = Vec::new();
+                if self.peek().kind == TokenKind::LParen {
+                    self.expect(TokenKind::LParen)?;
+                    if self.peek().kind != TokenKind::RParen {
+                        loop { args.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                }
+                Ok(Expr::New(name, args, t.span))
+            }
+            TokenKind::LBracket => {
+                let mut elems = Vec::new();
+                if self.peek().kind != TokenKind::RBracket {
+                    loop { elems.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
+                }
+                self.expect(TokenKind::RBracket)?;
+                Ok(Expr::ArrayLit(elems, t.span))
+            }
             TokenKind::Ident(ref s) => {
                 if self.peek().kind == TokenKind::LParen {
                     self.expect(TokenKind::LParen)?;
@@ -170,7 +370,53 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(TokenKind::RParen)?;
                     Ok(Expr::Call{ name: s.clone(), args, span: t.span })
-                } else { Ok(Expr::Var(s.clone(), t.span)) }
+                } else {
+                    let mut base = Expr::Var(s.clone(), t.span.clone());
+                    while self.peek().kind == TokenKind::Dot || self.peek().kind == TokenKind::LBracket {
+                        if self.peek().kind == TokenKind::Dot {
+                            self.next();
+                            let fld = match self.next().kind.clone() { TokenKind::Ident(s2) => s2, _ => return Err(AxityError::parse("expected member name", self.peek().span.clone())) };
+                            if self.peek().kind == TokenKind::LParen {
+                                self.expect(TokenKind::LParen)?;
+                                let mut args = Vec::new();
+                                if self.peek().kind != TokenKind::RParen {
+                                    loop { args.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
+                                }
+                                self.expect(TokenKind::RParen)?;
+                                base = Expr::MethodCall{ object: Box::new(base), name: fld, args, span: t.span.clone() };
+                            } else {
+                                base = Expr::Member{ object: Box::new(base), field: fld, span: t.span.clone() };
+                            }
+                        } else {
+                            self.expect(TokenKind::LBracket)?;
+                            let idx = self.expr()?;
+                            self.expect(TokenKind::RBracket)?;
+                            base = Expr::Index{ array: Box::new(base), index: Box::new(idx), span: t.span.clone() };
+                        }
+                    }
+                    Ok(base)
+                }
+            }
+            TokenKind::TrueKw => Ok(Expr::Bool(true, t.span)),
+            TokenKind::FalseKw => Ok(Expr::Bool(false, t.span)),
+            TokenKind::SelfKw => {
+                let mut base = Expr::Var("self".to_string(), t.span.clone());
+                while self.peek().kind == TokenKind::Dot {
+                    self.next();
+                    let fld = match self.next().kind.clone() { TokenKind::Ident(s2) => s2, _ => return Err(AxityError::parse("expected member name", self.peek().span.clone())) };
+                    if self.peek().kind == TokenKind::LParen {
+                        self.expect(TokenKind::LParen)?;
+                        let mut args = Vec::new();
+                        if self.peek().kind != TokenKind::RParen {
+                            loop { args.push(self.expr()?); if self.peek().kind == TokenKind::Comma { self.next(); } else { break; } }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                        base = Expr::MethodCall{ object: Box::new(base), name: fld, args, span: t.span.clone() };
+                    } else {
+                        base = Expr::Member{ object: Box::new(base), field: fld, span: t.span.clone() };
+                    }
+                }
+                Ok(base)
             }
             TokenKind::LParen => { let e = self.expr()?; self.expect(TokenKind::RParen)?; Ok(e) }
             _ => Err(AxityError::parse("unexpected token in expression", t.span))
