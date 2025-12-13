@@ -1,7 +1,22 @@
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone)]
-pub enum Value { Int(i64) }
+pub enum Value {
+    Int(i64),
+    Str(String),
+    Array(Rc<RefCell<Vec<Value>>>),
+    Bool(bool),
+    Map(Rc<RefCell<HashMap<String, Value>>>),
+    Object(Rc<RefCell<Object>>),
+}
+
+#[derive(Debug)]
+pub struct Object {
+    pub class: String,
+    pub fields: HashMap<String, Value>,
+}
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -21,5 +36,14 @@ impl Runtime {
     }
     pub fn push_scope(&mut self) { self.scopes.push(HashMap::new()); }
     pub fn pop_scope(&mut self) { self.scopes.pop(); }
+    pub fn fmt_env(&self) -> String {
+        let mut out = String::new();
+        for (si, scope) in self.scopes.iter().enumerate() {
+            out.push_str(&format!("scope {}:\n", si));
+            for (k, v) in scope {
+                out.push_str(&format!("  {} = {}\n", k, crate::interpreter::fmt_value(v, 2)));
+            }
+        }
+        out
+    }
 }
-
