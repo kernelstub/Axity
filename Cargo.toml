@@ -1,11 +1,12 @@
 [package]
 name = "axity"
 version = "0.1.0"
-edition = "2025"
+edition = "2021"
 
 [profile.dev]
 opt-level = 0
 
 [profile.release]
 opt-level = 3
+
 
