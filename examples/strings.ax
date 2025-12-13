@@ -1,0 +1,4 @@
+let a: string = "hi";
+let b: string = " there";
+print(a + b);
+
