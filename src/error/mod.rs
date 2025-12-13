@@ -27,6 +27,7 @@ impl AxityError {
     pub fn rt(msg: &str) -> Self { Self { kind: AxityErrorKind::Runtime(msg.to_string()), span: None } }
 }
 
+
 impl Display for AxityError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match (&self.kind, &self.span) {
