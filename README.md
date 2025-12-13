@@ -2,7 +2,8 @@
 <br />
 <div align="center">
 
-  <img src="https://github.com/user-attachments/assets/88b1822f-f8c7-42e7-a0be-36afaee88016" alt="Axity Logo" width="120" />
+
+  <img src="https://github.com/user-attachments/assets/38cf8c19-b47f-4f7a-aa74-f40976fd9b26" alt="Axity Logo" width="120" />
 
   <h3 align="center">Axity</h3>
 
