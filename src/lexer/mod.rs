@@ -1,0 +1,88 @@
+use crate::error::{AxityError, Span};
+use crate::token::{Token, TokenKind};
+
+pub fn lex(input: &str) -> Result<Vec<Token>, AxityError> {
+    let mut out = Vec::new();
+    let mut iter = input.chars().peekable();
+    let mut line = 1usize;
+    let mut col = 1usize;
+    while let Some(&c) = iter.peek() {
+        if c == '\n' { iter.next(); line += 1; col = 1; continue; }
+        if c.is_whitespace() { iter.next(); col += 1; continue; }
+        if c.is_ascii_alphabetic() || c == '_' {
+            let start_col = col;
+            let mut s = String::new();
+            while let Some(&ch) = iter.peek() {
+                if ch.is_ascii_alphanumeric() || ch == '_' { s.push(ch); iter.next(); col += 1; } else { break; }
+            }
+            let kind = match s.as_str() {
+                "let" => TokenKind::Let,
+                "fn" => TokenKind::Fn,
+                "return" => TokenKind::Return,
+                "print" => TokenKind::Print,
+                "while" => TokenKind::While,
+                "int" => TokenKind::IntType,
+                _ => TokenKind::Ident(s),
+            };
+            out.push(Token{ kind, span: Span{ line, col: start_col } });
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let start_col = col;
+            let mut v: i64 = 0;
+            while let Some(&ch) = iter.peek() {
+                if ch.is_ascii_digit() { v = v*10 + (ch as i64 - '0' as i64); iter.next(); col += 1; } else { break; }
+            }
+            out.push(Token{ kind: TokenKind::IntLit(v), span: Span{ line, col: start_col } });
+            continue;
+        }
+        match c {
+            '(' => { out.push(Token{ kind: TokenKind::LParen, span: Span{ line, col } }); iter.next(); col += 1; }
+            ')' => { out.push(Token{ kind: TokenKind::RParen, span: Span{ line, col } }); iter.next(); col += 1; }
+            '{' => { out.push(Token{ kind: TokenKind::LBrace, span: Span{ line, col } }); iter.next(); col += 1; }
+            '}' => { out.push(Token{ kind: TokenKind::RBrace, span: Span{ line, col } }); iter.next(); col += 1; }
+            ':' => { out.push(Token{ kind: TokenKind::Colon, span: Span{ line, col } }); iter.next(); col += 1; }
+            ';' => { out.push(Token{ kind: TokenKind::Semicolon, span: Span{ line, col } }); iter.next(); col += 1; }
+            ',' => { out.push(Token{ kind: TokenKind::Comma, span: Span{ line, col } }); iter.next(); col += 1; }
+            '-' => {
+                let start_col = col;
+                iter.next(); col += 1;
+                if let Some('>') = iter.peek().copied() { iter.next(); col += 1; out.push(Token{ kind: TokenKind::Arrow, span: Span{ line, col: start_col } }); }
+                else { out.push(Token{ kind: TokenKind::Minus, span: Span{ line, col: start_col } }); }
+            }
+            '=' => {
+                let start_col = col;
+                iter.next(); col += 1;
+                if let Some('=') = iter.peek().copied() { iter.next(); col += 1; out.push(Token{ kind: TokenKind::EqEq, span: Span{ line, col: start_col } }); }
+                else { out.push(Token{ kind: TokenKind::Assign, span: Span{ line, col: start_col } }); }
+            }
+            '+' => { out.push(Token{ kind: TokenKind::Plus, span: Span{ line, col } }); iter.next(); col += 1; }
+            '*' => { out.push(Token{ kind: TokenKind::Star, span: Span{ line, col } }); iter.next(); col += 1; }
+            '/' => { out.push(Token{ kind: TokenKind::Slash, span: Span{ line, col } }); iter.next(); col += 1; }
+            '<' => {
+                let start_col = col;
+                iter.next(); col += 1;
+                if let Some('=') = iter.peek().copied() { iter.next(); col += 1; out.push(Token{ kind: TokenKind::LessEq, span: Span{ line, col: start_col } }); }
+                else { out.push(Token{ kind: TokenKind::Less, span: Span{ line, col: start_col } }); }
+            }
+            '>' => {
+                let start_col = col;
+                iter.next(); col += 1;
+                if let Some('=') = iter.peek().copied() { iter.next(); col += 1; out.push(Token{ kind: TokenKind::GreaterEq, span: Span{ line, col: start_col } }); }
+                else { out.push(Token{ kind: TokenKind::Greater, span: Span{ line, col: start_col } }); }
+            }
+            '!' => {
+                let start_col = col;
+                iter.next(); col += 1;
+                if let Some('=') = iter.peek().copied() { iter.next(); col += 1; out.push(Token{ kind: TokenKind::NotEq, span: Span{ line, col: start_col } }); }
+                else { return Err(AxityError::lex("unexpected '!'", Span{ line, col: start_col })); }
+            }
+            _ => {
+                return Err(AxityError::lex("unexpected character", Span{ line, col }));
+            }
+        }
+    }
+    out.push(Token{ kind: TokenKind::Eof, span: Span{ line, col } });
+    Ok(out)
+}
+
