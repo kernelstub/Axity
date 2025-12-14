@@ -86,8 +86,3 @@
 - Error Model: `docs/error_model.md`
 - Language Guide: `docs/language/guide.md`
 - Changelog: `changelog/changes.md`
-
-<h1 id="contributing">Contributing</h1>
-- Open issues or proposals describing new language features or bugs
-- Keep modules isolated and follow the phase separation
-- Maintain `cargo test` coverage for lexer, parser, type checker, and execution
