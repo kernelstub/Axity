@@ -31,16 +31,19 @@
 </details>
 
 <h1 id="about">About</h1>
+
 - Readable, testable language with clear phase separation: lex → parse → type-check → interpret
 - Deterministic interpreter, explicit scopes, stack-based calls
 - Designed for extensibility (maps, imports, IO) and future codegen/JIT
 
 <h1 id="installation">Installation</h1>
+
 - Requires Rust stable and Cargo
 - Build: `cargo build`
 - Optional: `cargo fmt`, `cargo clippy`
 
 <h1 id="usage">Usage</h1>
+
 - Run an Axity program:
   - Windows: `cargo run -- .\examples\basic.ax`
   - Unix: `cargo run -- examples/basic.ax`
@@ -49,6 +52,7 @@
 - Library: `axity::run_source(&str)` or `axity::run_file(path)`
 
 <h1 id="features">Features</h1>
+
 - Types: `int`, `string` (`str` alias), `bool`, `flt` (fixed-point float), `array<T>`, `map<T>`, `obj`, `buffer`, `class`
 - Expressions:
   - Arithmetic `+ - * / %` on `int` and `flt` (mixed coerces to `flt`)
@@ -63,6 +67,7 @@
 - Pretty printing: arrays `[a, b]`, maps `{k: v}`, objects `Class{field: val}`, buffers `<buffer len=N>`
 
 <h1 id="built-ins">Built-ins</h1>
+
 - Arrays: `len(xs)`, `push(xs, v)`, `pop(xs)`, `set(xs, i, v)`, `xs[i]`
 - Strings: `strlen(s)`, `substr(s, start, len)`, `index_of(s, sub)`, `to_int(s)`, `to_string(i)`
 - Math: `sin(x)`, `cos(x)`, `tan(x)` where `x` is radians (`flt` or `int`)
@@ -74,6 +79,7 @@
 - Buffers: `buffer_new(size)`, `buffer_len(buf)`, `buffer_get(buf, idx)`, `buffer_set(buf, idx, byte)`, `buffer_push(buf, byte)`, `buffer_from_string(s)`, `buffer_to_string(buf)`
 
 <h1 id="docs">Docs</h1>
+
 - Architecture: `docs/architecture.md`
 - Semantics: `docs/semantics.md`
 - Invariants: `docs/invariants.md`
