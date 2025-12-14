@@ -65,7 +65,11 @@ fn check_stmt(s: &Stmt, vars: &mut Vec<HashMap<String, Type>>, funcs: &HashMap<S
             if let Type::Class(ref cname) = ot {
                 let (flds, _) = classes.get(cname).ok_or_else(|| AxityError::ty("unknown class", span.clone()))?;
                 let ft = flds.get(field).ok_or_else(|| AxityError::ty("unknown field", span.clone()))?;
-                if *ft != vt { return Err(AxityError::ty("field type mismatch", span.clone())); }
+                if !(type_equals(&vt, ft)) { return Err(AxityError::ty("field type mismatch", span.clone())); }
+                Ok(())
+            } else if let Type::Obj = ot {
+                Ok(())
+            } else if let Type::Any = ot {
                 Ok(())
             } else { Err(AxityError::ty("member assign target not class", span.clone())) }
         }
@@ -74,6 +78,34 @@ fn check_stmt(s: &Stmt, vars: &mut Vec<HashMap<String, Type>>, funcs: &HashMap<S
         Stmt::While{ cond, body, span: _ } => {
             let _ = check_expr(cond, vars, funcs, classes)?;
             vars.push(HashMap::new());
+            for st in body { check_stmt(st, vars, funcs, classes)?; }
+            vars.pop();
+            Ok(())
+        }
+        Stmt::DoWhile{ body, cond, .. } => {
+            vars.push(HashMap::new());
+            for st in body { check_stmt(st, vars, funcs, classes)?; }
+            vars.pop();
+            let _ = check_expr(cond, vars, funcs, classes)?;
+            Ok(())
+        }
+        Stmt::ForC{ init, cond, post, body, .. } => {
+            vars.push(HashMap::new());
+            if let Some(st) = init { check_stmt(&*st, vars, funcs, classes)?; }
+            if let Some(c) = cond { let _ = check_expr(c, vars, funcs, classes)?; }
+            if let Some(pe) = post { check_stmt(&*pe, vars, funcs, classes)?; }
+            for st in body { check_stmt(st, vars, funcs, classes)?; }
+            vars.pop();
+            Ok(())
+        }
+        Stmt::ForEach{ var, collection, body, span: _ } => {
+            let ct = check_expr(collection, vars, funcs, classes)?;
+            vars.push(HashMap::new());
+            match ct {
+                Type::Array(inner) => { vars.last_mut().unwrap().insert(var.clone(), *inner.clone()); }
+                Type::Map(_inner) => { vars.last_mut().unwrap().insert(var.clone(), Type::String); }
+                _ => { return Err(AxityError::ty("foreach expects array or map", span_of_expr(collection))); }
+            }
             for st in body { check_stmt(st, vars, funcs, classes)?; }
             vars.pop();
             Ok(())
@@ -89,6 +121,18 @@ fn check_stmt(s: &Stmt, vars: &mut Vec<HashMap<String, Type>>, funcs: &HashMap<S
             Ok(())
         }
         Stmt::Return{ expr, .. } => { let _ = check_expr(expr, vars, funcs, classes)?; Ok(()) }
+        Stmt::Retry(_) => Ok(()),
+        Stmt::Throw{ expr, .. } => { let _ = check_expr(expr, vars, funcs, classes)?; Ok(()) }
+        Stmt::Try{ body, catch_name, catch_body, .. } => {
+            vars.push(HashMap::new());
+            for st in body { check_stmt(st, vars, funcs, classes)?; }
+            vars.pop();
+            vars.push(HashMap::new());
+            vars.last_mut().unwrap().insert(catch_name.clone(), Type::Obj);
+            for st in catch_body { check_stmt(st, vars, funcs, classes)?; }
+            vars.pop();
+            Ok(())
+        }
         Stmt::Match{ expr, arms, default: _, span: _ } => {
             let et = check_expr(expr, vars, funcs, classes)?;
             for arm in arms {
@@ -97,7 +141,6 @@ fn check_stmt(s: &Stmt, vars: &mut Vec<HashMap<String, Type>>, funcs: &HashMap<S
                     Pattern::PStr(_) => Type::String,
                     Pattern::PBool(_) => Type::Bool,
                 };
-                if pt != et { return Err(AxityError::ty("pattern type mismatch", span_of_expr(expr))); }
                 vars.push(HashMap::new());
                 for st in &arm.body { check_stmt(st, vars, funcs, classes)?; }
                 vars.pop();
@@ -110,6 +153,7 @@ fn check_stmt(s: &Stmt, vars: &mut Vec<HashMap<String, Type>>, funcs: &HashMap<S
 fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<String,(Vec<Type>,Type,Span)>, classes: &HashMap<String,(HashMap<String,Type>,HashMap<String,(Vec<Type>,Type)>)>) -> Result<Type, AxityError> {
     match e {
         Expr::Int(_, _) => Ok(Type::Int),
+        Expr::Flt(_, _) => Ok(Type::Flt),
         Expr::Str(_, _) => Ok(Type::String),
         Expr::Bool(_, _) => Ok(Type::Bool),
         Expr::ArrayLit(elems, sp) => {
@@ -117,17 +161,23 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
             let first = check_expr(&elems[0], vars, funcs, classes)?;
             for el in elems.iter().skip(1) {
                 let et = check_expr(el, vars, funcs, classes)?;
-                if et != first { return Err(AxityError::ty("array literal elements must match", sp.clone())); }
+                if !(type_equals(&et, &first)) { return Err(AxityError::ty("array literal elements must match", sp.clone())); }
             }
             Ok(Type::Array(Box::new(first)))
+        }
+        Expr::ObjLit(_pairs, _sp) => Ok(Type::Obj),
+        Expr::Lambda{ params, ret, .. } => {
+            let arg_tys = params.iter().map(|p| p.ty.clone()).collect::<Vec<_>>();
+            Ok(Type::Fn(arg_tys, Box::new(ret.clone())))
         }
         Expr::Var(name, sp) => lookup_var(name, vars).ok_or_else(|| AxityError::ty("undefined variable", sp.clone())),
         Expr::Binary{ left, right, op, .. } => {
             let lt = check_expr(left, vars, funcs, classes)?;
             let rt = check_expr(right, vars, funcs, classes)?;
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
                     if *op == BinOp::Add && lt==Type::String && rt==Type::String { Ok(Type::String) }
+                    else if lt==Type::Flt || rt==Type::Flt { Ok(Type::Flt) }
                     else { Ok(Type::Int) }
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
@@ -143,12 +193,25 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
             if t != Type::Bool { return Err(AxityError::ty("! requires bool", span.clone())); }
             Ok(Type::Bool)
         }
+        Expr::UnaryNeg{ expr, .. } => {
+            let t = check_expr(expr, vars, funcs, classes)?;
+            Ok(t)
+        }
+        Expr::UnaryBitNot{ expr, span } => {
+            let t = check_expr(expr, vars, funcs, classes)?;
+            if t != Type::Int { return Err(AxityError::ty("~ requires int", span.clone())); }
+            Ok(Type::Int)
+        }
         Expr::New(name, _args, _) => Ok(Type::Class(name.clone())),
         Expr::Member{ object, field, span } => {
             let ot = check_expr(object, vars, funcs, classes)?;
             if let Type::Class(ref cname) = ot {
                 let (flds, _) = classes.get(cname).ok_or_else(|| AxityError::ty("unknown class", span.clone()))?;
                 flds.get(field).cloned().ok_or_else(|| AxityError::ty("unknown field", span.clone()))
+            } else if let Type::Obj = ot {
+                Ok(Type::Obj)
+            } else if let Type::Any = ot {
+                Ok(Type::Any)
             } else { Err(AxityError::ty("member access target not class", span.clone())) }
         }
         Expr::Index{ array, index, span } => {
@@ -156,6 +219,13 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
             let it = check_expr(index, vars, funcs, classes)?;
             if it != Type::Int { return Err(AxityError::ty("array index must be int", span.clone())); }
             if let Type::Array(inner) = at { Ok(*inner.clone()) } else { Err(AxityError::ty("indexing non-array", span.clone())) }
+        }
+        Expr::CallCallee{ callee, args: _, span } => {
+            let ct = check_expr(callee, vars, funcs, classes)?;
+            match ct {
+                Type::Fn(_p, ret) => Ok(*ret.clone()),
+                _ => Err(AxityError::ty("callee is not function", span.clone()))
+            }
         }
         Expr::MethodCall{ object, name, args: _, span } => {
             let ot = check_expr(object, vars, funcs, classes)?;
@@ -251,7 +321,7 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
                 let at = check_expr(&args[0], vars, funcs, classes)?;
                 if let Type::Array(inner) = at {
                     let vt = check_expr(&args[1], vars, funcs, classes)?;
-                    if vt != *inner { return Err(AxityError::ty("push value type mismatch", span.clone())); }
+                    if !(type_equals(&vt, &*inner)) { return Err(AxityError::ty("push value type mismatch", span.clone())); }
                     Ok(Type::Int)
                 } else { Err(AxityError::ty("push expects array", span.clone())) }
             } else if name == "pop" {
@@ -265,7 +335,7 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
                 if it != Type::Int { return Err(AxityError::ty("set index must be int", span.clone())); }
                 if let Type::Array(inner) = at {
                     let vt = check_expr(&args[2], vars, funcs, classes)?;
-                    if vt != *inner { return Err(AxityError::ty("set value type mismatch", span.clone())); }
+                    if !(type_equals(&vt, &*inner)) { return Err(AxityError::ty("set value type mismatch", span.clone())); }
                     Ok(Type::Int)
                 } else { Err(AxityError::ty("set expects array", span.clone())) }
             } else if name == "strlen" {
@@ -321,12 +391,53 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
                 if args.len() != 1 { return Err(AxityError::ty("map_keys expects (map)", span.clone())); }
                 let mt = check_expr(&args[0], vars, funcs, classes)?;
                 match mt { Type::Map(_) => Ok(Type::Array(Box::new(Type::String))), _ => Err(AxityError::ty("first arg must be map", span.clone())) }
+            } else if name == "sin" || name == "cos" || name == "tan" {
+                if args.len() != 1 { return Err(AxityError::ty("trig expects one argument (radians)", span.clone())); }
+                let t0 = check_expr(&args[0], vars, funcs, classes)?;
+                match t0 {
+                    Type::Flt | Type::Int => Ok(Type::Flt),
+                    _ => Err(AxityError::ty("trig arg must be flt or int", span.clone()))
+                }
+            } else if name == "buffer_new" {
+                if args.len() != 1 { return Err(AxityError::ty("buffer_new expects size", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Int { return Err(AxityError::ty("size must be int", span.clone())); }
+                Ok(Type::Buffer)
+            } else if name == "buffer_len" {
+                if args.len() != 1 { return Err(AxityError::ty("buffer_len expects buffer", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Buffer { return Err(AxityError::ty("arg must be buffer", span.clone())); }
+                Ok(Type::Int)
+            } else if name == "buffer_get" {
+                if args.len() != 2 { return Err(AxityError::ty("buffer_get expects (buffer, index)", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Buffer || check_expr(&args[1], vars, funcs, classes)? != Type::Int { return Err(AxityError::ty("arg types", span.clone())); }
+                Ok(Type::Int)
+            } else if name == "buffer_set" {
+                if args.len() != 3 { return Err(AxityError::ty("buffer_set expects (buffer, index, byte)", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Buffer || check_expr(&args[1], vars, funcs, classes)? != Type::Int || check_expr(&args[2], vars, funcs, classes)? != Type::Int { return Err(AxityError::ty("arg types", span.clone())); }
+                Ok(Type::Int)
+            } else if name == "buffer_push" {
+                if args.len() != 2 { return Err(AxityError::ty("buffer_push expects (buffer, byte)", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Buffer || check_expr(&args[1], vars, funcs, classes)? != Type::Int { return Err(AxityError::ty("arg types", span.clone())); }
+                Ok(Type::Int)
+            } else if name == "buffer_from_string" {
+                if args.len() != 1 { return Err(AxityError::ty("buffer_from_string expects string", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::String { return Err(AxityError::ty("arg must be string", span.clone())); }
+                Ok(Type::Buffer)
+            } else if name == "buffer_to_string" {
+                if args.len() != 1 { return Err(AxityError::ty("buffer_to_string expects buffer", span.clone())); }
+                if check_expr(&args[0], vars, funcs, classes)? != Type::Buffer { return Err(AxityError::ty("arg must be buffer", span.clone())); }
+                Ok(Type::String)
             } else {
-                let sig = funcs.get(name).ok_or_else(|| AxityError::ty("undefined function", span.clone()))?;
-                if args.len() != sig.0.len() { return Err(AxityError::ty("argument count mismatch", span.clone())); }
-                // Loosen argument type enforcement to allow interpreter-driven semantics
-                // This avoids false mismatches across imports and simplifies built-in coexistence
-                Ok(sig.1.clone())
+                if let Some(sig) = funcs.get(name) {
+                    if args.len() != sig.0.len() { return Err(AxityError::ty("argument count mismatch", span.clone())); }
+                    Ok(sig.1.clone())
+                } else if let Some(vt) = lookup_var(name, vars) {
+                    match vt {
+                        Type::Fn(_params, ret) => Ok(*ret.clone()),
+                        _ => Ok(Type::Int)
+                    }
+                } else {
+                    Ok(Type::Int)
+                }
             }
         }
     }
@@ -337,20 +448,31 @@ fn lookup_var(name: &str, vars: &Vec<HashMap<String, Type>>) -> Option<Type> {
     None
 }
 
+fn type_equals(a: &Type, b: &Type) -> bool {
+    if matches!(a, Type::Any) || matches!(b, Type::Any) { return true; }
+    a == b
+}
+
 fn span_of_expr(e: &Expr) -> Span {
     match e {
         Expr::Int(_, s) => s.clone(),
+        Expr::Flt(_, s) => s.clone(),
         Expr::Str(_, s) => s.clone(),
         Expr::Bool(_, s) => s.clone(),
         Expr::ArrayLit(_, s) => s.clone(),
+        Expr::ObjLit(_, s) => s.clone(),
+        Expr::Lambda{ span, .. } => span.clone(),
         Expr::Var(_, s) => s.clone(),
         Expr::New(_, _, s) => s.clone(),
         Expr::Member{ span, .. } => span.clone(),
         Expr::Index{ span, .. } => span.clone(),
         Expr::MethodCall{ span, .. } => span.clone(),
         Expr::UnaryNot{ span, .. } => span.clone(),
+        Expr::UnaryNeg{ span, .. } => span.clone(),
+        Expr::UnaryBitNot{ span, .. } => span.clone(),
         Expr::Binary{ span, .. } => span.clone(),
         Expr::Call{ span, .. } => span.clone(),
+        Expr::CallCallee{ span, .. } => span.clone(),
     }
 }
 
