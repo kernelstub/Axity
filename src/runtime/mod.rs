@@ -5,10 +5,14 @@ use std::cell::RefCell;
 #[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
+    Flt(i64),
     Str(String),
     Array(Rc<RefCell<Vec<Value>>>),
     Bool(bool),
-    Map(Rc<RefCell<HashMap<String, Value>>>),
+    Map(Rc<RefCell<std::collections::HashMap<String, Value>>>),
+    Obj(Rc<RefCell<std::collections::HashMap<String, Value>>>),
+    Lambda(Rc<Lambda>),
+    Buffer(Rc<RefCell<Vec<u8>>>),
     Object(Rc<RefCell<Object>>),
 }
 
@@ -18,6 +22,12 @@ pub struct Object {
     pub fields: HashMap<String, Value>,
 }
 
+#[derive(Debug)]
+pub struct Lambda {
+    pub params: Vec<crate::ast::Param>,
+    pub ret: crate::types::Type,
+    pub body: Vec<crate::ast::Stmt>,
+}
 #[derive(Debug)]
 pub struct Runtime {
     pub scopes: Vec<HashMap<String, Value>>,

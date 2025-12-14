@@ -1,4 +1,4 @@
-let a: string = "hi";
-let b: string = " there";
+let a: str = "hi";
+let b: str = " there";
 print(a + b);
 

@@ -5,11 +5,60 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+const SCALE: i64 = 1_000_000;
 pub fn execute(p: &Program, rt: &mut Runtime, out: &mut String) -> Result<(), AxityError> {
-    for it in &p.items { if let Item::Stmt(s) = it { exec_stmt(p, s, rt, out)?; } }
+    for it in &p.items {
+        if let Item::Stmt(s) = it {
+            match exec_stmt(p, s, rt, out)? {
+                Control::Next => {}
+                Control::Return(_) => {}
+                Control::Retry => {}
+                Control::Throw(e) => { return Err(AxityError::rt(&format!("uncaught exception: {}", fmt_value(&e, 2)))); }
+            }
+        }
+    }
     let has_main = p.items.iter().any(|it| if let Item::Func(f)=it { f.name=="main" } else { false });
-    if has_main { call_func("main", &[], p, rt, out)?; }
+    if has_main {
+        let rv = call_func("main", &[], p, rt, out)?;
+        out.push_str(&fmt_value(&rv, 2));
+        out.push('\n');
+    }
     Ok(())
+}
+
+fn interpolate_str(s: &str, rt: &Runtime) -> String {
+    let mut out = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i+1] == b'{' {
+            i += 2;
+            let start = i;
+            while i < bytes.len() {
+                let c = bytes[i];
+                if c == b'}' { break; }
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'}' {
+                let name = &s[start..i];
+                if let Some(v) = rt.get(name) {
+                    out.push_str(&fmt_value(&v, 2));
+                } else {
+                    out.push_str(&format!("!{{{}}}", name));
+                }
+                i += 1;
+            } else {
+                out.push('!');
+                out.push('{');
+                out.push_str(&s[start..]);
+                break;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Result<Control, AxityError> {
@@ -18,12 +67,47 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
         Stmt::Assign{ name, expr, .. } => { let v = eval_expr(p, expr, rt, out)?; if !rt.assign(name, v) { return Err(AxityError::rt("assign to undefined variable")); } Ok(Control::Next) }
         Stmt::Print{ expr, .. } => {
             let v = eval_expr(p, expr, rt, out)?;
-            let s = fmt_value(&v, 2);
+            let s = match v {
+                Value::Str(s) => interpolate_str(&s, rt),
+                _ => fmt_value(&v, 2),
+            };
             out.push_str(&s);
             out.push('\n');
             Ok(Control::Next)
         }
         Stmt::Expr(e) => { let _ = eval_expr(p, e, rt, out)?; Ok(Control::Next) }
+        Stmt::Retry(_) => Ok(Control::Retry),
+        Stmt::Throw{ expr, .. } => {
+            let v = eval_expr(p, expr, rt, out)?;
+            Ok(Control::Throw(v))
+        }
+        Stmt::Try{ body, catch_name, catch_body, .. } => {
+            rt.push_scope();
+            for st in body {
+                match exec_stmt(p, st, rt, out)? {
+                    Control::Next => {}
+                    Control::Return(v) => { rt.pop_scope(); return Ok(Control::Return(v)); }
+                    Control::Retry => {}
+                    Control::Throw(err) => {
+                        rt.pop_scope();
+                        rt.push_scope();
+                        rt.set(catch_name.clone(), err);
+                        for stc in catch_body {
+                            match exec_stmt(p, stc, rt, out)? {
+                                Control::Next => {}
+                                Control::Return(v) => { rt.pop_scope(); return Ok(Control::Return(v)); }
+                                Control::Retry => {}
+                                Control::Throw(e2) => { rt.pop_scope(); return Ok(Control::Throw(e2)); }
+                            }
+                        }
+                        rt.pop_scope();
+                        return Ok(Control::Next);
+                    }
+                }
+            }
+            rt.pop_scope();
+            Ok(Control::Next)
+        }
         Stmt::MemberAssign{ object, field, expr, .. } => {
             let ov = eval_expr(p, object, rt, out)?;
             match ov {
@@ -43,6 +127,12 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                                 BinOp::Sub => ci - ri,
                                 BinOp::Mul => ci * ri,
                                 BinOp::Div => ci / ri,
+                                BinOp::Mod => if ri == 0 { ci } else { ci % ri },
+                                BinOp::BitAnd => ci & ri,
+                                BinOp::BitOr => ci | ri,
+                                BinOp::BitXor => ci ^ ri,
+                                BinOp::Shl => ci << ri,
+                                BinOp::Shr => ci >> ri,
                                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => if ci == ri {1} else {0},
                                 BinOp::And | BinOp::Or => if ci != 0 && ri != 0 {1} else {0},
                             };
@@ -54,6 +144,11 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                     rc.borrow_mut().fields.insert(field.clone(), v);
                     Ok(Control::Next)
                 }
+                Value::Obj(rc) => {
+                    let v = eval_expr(p, expr, rt, out)?;
+                    rc.borrow_mut().insert(field.clone(), v);
+                    Ok(Control::Next)
+                }
                 _ => Err(AxityError::rt("member assignment on non-object"))
             }
         }
@@ -63,8 +158,17 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                 let ci = match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 };
                 if ci == 0 { break; }
                 rt.push_scope();
-                for st in body { if let Control::Return(_) = exec_stmt(p, st, rt, out)? { rt.pop_scope(); return Ok(Control::Next); } }
+                let mut did_retry = false;
+                for st in body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { did_retry = true; break; }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
                 rt.pop_scope();
+                if did_retry { continue; }
             }
             Ok(Control::Next)
         }
@@ -73,12 +177,123 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
             let ci = match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 };
             rt.push_scope();
             if ci != 0 {
-                for st in then_body { if let Control::Return(_) = exec_stmt(p, st, rt, out)? { rt.pop_scope(); return Ok(Control::Next); } }
+                for st in then_body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { rt.pop_scope(); return Ok(Control::Retry); }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
             } else {
-                for st in else_body { if let Control::Return(_) = exec_stmt(p, st, rt, out)? { rt.pop_scope(); return Ok(Control::Next); } }
+                for st in else_body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { rt.pop_scope(); return Ok(Control::Retry); }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
             }
             rt.pop_scope();
             Ok(Control::Next)
+        }
+        Stmt::DoWhile{ body, cond, .. } => {
+            loop {
+                rt.push_scope();
+                let mut did_retry = false;
+                for st in body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { did_retry = true; break; }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
+                if did_retry {
+                    // proceed to condition check for do-while; scope already popped after loop
+                }
+                rt.pop_scope();
+                let c = eval_expr(p, cond, rt, out)?;
+                let ci = match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 };
+                if ci == 0 { break; }
+            }
+            Ok(Control::Next)
+        }
+        Stmt::ForC{ init, cond, post, body, .. } => {
+            rt.push_scope();
+            if let Some(initst) = init { let _ = exec_stmt(p, &*initst, rt, out)?; }
+            loop {
+                let ci = if let Some(c) = cond {
+                    let v = eval_expr(p, c, rt, out)?;
+                    match v { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 }
+                } else { 1 };
+                if ci == 0 { break; }
+                let mut did_retry = false;
+                for st in body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { did_retry = true; break; }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
+                if let Some(pst) = post {
+                    match exec_stmt(p, &*pst, rt, out)? {
+                        Control::Next => {},
+                        Control::Return(_) => {},
+                        Control::Retry => {},
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
+                if did_retry { continue; }
+            }
+            rt.pop_scope();
+            Ok(Control::Next)
+        }
+        Stmt::ForEach{ var, collection, body, .. } => {
+            let collv = eval_expr(p, collection, rt, out)?;
+            match collv {
+                Value::Array(vs) => {
+                    let vb = vs.borrow().clone();
+                    for el in vb.iter() {
+                        rt.push_scope();
+                        rt.set(var.clone(), el.clone());
+                        let mut did_retry = false;
+                for st in body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { did_retry = true; break; }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
+                        rt.pop_scope();
+                        if did_retry { continue; }
+                    }
+                    Ok(Control::Next)
+                }
+                Value::Map(mm) => {
+                    let keys: Vec<String> = mm.borrow().keys().cloned().collect();
+                    for k in keys {
+                        rt.push_scope();
+                        rt.set(var.clone(), Value::Str(k.clone()));
+                        let mut did_retry = false;
+                for st in body {
+                    match exec_stmt(p, st, rt, out)? {
+                        Control::Next => {}
+                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                        Control::Retry => { did_retry = true; break; }
+                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                    }
+                }
+                        rt.pop_scope();
+                        if did_retry { continue; }
+                    }
+                    Ok(Control::Next)
+                }
+                _ => Err(AxityError::rt("foreach expects array or map"))
+            }
         }
         Stmt::Return{ expr, .. } => { let v = eval_expr(p, expr, rt, out)?; Ok(Control::Return(v)) }
         Stmt::Match{ expr, arms, default, .. } => {
@@ -94,7 +309,14 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                 if ok {
                     matched = true;
                     rt.push_scope();
-                    for st in &arm.body { if let Control::Return(_) = exec_stmt(p, st, rt, out)? { rt.pop_scope(); return Ok(Control::Next); } }
+                    for st in &arm.body {
+                        match exec_stmt(p, st, rt, out)? {
+                            Control::Next => {}
+                            Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                            Control::Retry => { rt.pop_scope(); return Ok(Control::Retry); }
+                            Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                        }
+                    }
                     rt.pop_scope();
                     break;
                 }
@@ -102,7 +324,14 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
             if !matched {
                 if let Some(body) = default {
                     rt.push_scope();
-                    for st in body { if let Control::Return(_) = exec_stmt(p, st, rt, out)? { rt.pop_scope(); return Ok(Control::Next); } }
+                    for st in body {
+                        match exec_stmt(p, st, rt, out)? {
+                            Control::Next => {}
+                            Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                            Control::Retry => { rt.pop_scope(); return Ok(Control::Retry); }
+                            Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                        }
+                    }
                     rt.pop_scope();
                 }
             }
@@ -114,12 +343,24 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
 fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Result<Value, AxityError> {
     match e {
         Expr::Int(i, _) => Ok(Value::Int(*i)),
+        Expr::Flt(f, _) => Ok(Value::Flt(*f)),
         Expr::Var(name, _) => rt.get(name).ok_or_else(|| AxityError::rt("read of undefined variable")),
         Expr::Str(s, _) => Ok(Value::Str(s.clone())),
+        Expr::Lambda{ params, ret, body, .. } => {
+            Ok(Value::Lambda(Rc::new(crate::runtime::Lambda{ params: params.clone(), ret: ret.clone(), body: body.clone() })))
+        }
         Expr::ArrayLit(elems, _) => {
             let mut v = Vec::new();
             for el in elems { v.push(eval_expr(p, el, rt, out)?); }
             Ok(Value::Array(Rc::new(RefCell::new(v))))
+        }
+        Expr::ObjLit(pairs, _) => {
+            let mut m = std::collections::HashMap::new();
+            for (k, vexpr) in pairs {
+                let v = eval_expr(p, vexpr, rt, out)?;
+                m.insert(k.clone(), v);
+            }
+            Ok(Value::Obj(Rc::new(RefCell::new(m))))
         }
         Expr::Bool(b, _) => Ok(Value::Bool(*b)),
         Expr::Binary{ op, left, right, .. } => {
@@ -131,6 +372,12 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                         BinOp::Sub => li - ri,
                         BinOp::Mul => li * ri,
                         BinOp::Div => li / ri,
+                        BinOp::Mod => li % ri,
+                        BinOp::BitAnd => li & ri,
+                        BinOp::BitOr => li | ri,
+                        BinOp::BitXor => li ^ ri,
+                        BinOp::Shl => li << ri,
+                        BinOp::Shr => li >> ri,
                         BinOp::Lt => if li < ri {1} else {0},
                         BinOp::Le => if li <= ri {1} else {0},
                         BinOp::Gt => if li > ri {1} else {0},
@@ -141,6 +388,62 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                     };
                     Ok(Value::Int(v))
                 }
+                (Value::Flt(lf), Value::Flt(rf)) => {
+                    let v = match op {
+                        BinOp::Add => lf + rf,
+                        BinOp::Sub => lf - rf,
+                        BinOp::Mul => ((lf as i128) * (rf as i128) / (SCALE as i128)) as i64,
+                        BinOp::Div => ((lf as i128) * (SCALE as i128) / (rf as i128)) as i64,
+                        BinOp::Mod => (lf % rf),
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => return Err(AxityError::rt("bitwise requires int")),
+                        BinOp::Lt => if lf < rf {1} else {0},
+                        BinOp::Le => if lf <= rf {1} else {0},
+                        BinOp::Gt => if lf > rf {1} else {0},
+                        BinOp::Ge => if lf >= rf {1} else {0},
+                        BinOp::Eq => if lf == rf {1} else {0},
+                        BinOp::Ne => if lf != rf {1} else {0},
+                        BinOp::And | BinOp::Or => return Err(AxityError::rt("logical on flt")),
+                    };
+                    Ok(match op { BinOp::Add|BinOp::Sub|BinOp::Mul|BinOp::Div => Value::Flt(v), _ => Value::Int(v) })
+                }
+                (Value::Int(li), Value::Flt(rf)) => {
+                    let lf = li * SCALE;
+                    let v = match op {
+                        BinOp::Add => lf + rf,
+                        BinOp::Sub => lf - rf,
+                        BinOp::Mul => ((lf as i128) * (rf as i128) / (SCALE as i128)) as i64,
+                        BinOp::Div => ((lf as i128) * (SCALE as i128) / (rf as i128)) as i64,
+                        BinOp::Mod => (lf % rf),
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => return Err(AxityError::rt("bitwise requires int")),
+                        BinOp::Lt => if lf < rf {1} else {0},
+                        BinOp::Le => if lf <= rf {1} else {0},
+                        BinOp::Gt => if lf > rf {1} else {0},
+                        BinOp::Ge => if lf >= rf {1} else {0},
+                        BinOp::Eq => if lf == rf {1} else {0},
+                        BinOp::Ne => if lf != rf {1} else {0},
+                        BinOp::And | BinOp::Or => return Err(AxityError::rt("logical on flt")),
+                    };
+                    Ok(match op { BinOp::Add|BinOp::Sub|BinOp::Mul|BinOp::Div => Value::Flt(v), _ => Value::Int(v) })
+                }
+                (Value::Flt(lf), Value::Int(ri)) => {
+                    let rf = ri * SCALE;
+                    let v = match op {
+                        BinOp::Add => lf + rf,
+                        BinOp::Sub => lf - rf,
+                        BinOp::Mul => ((lf as i128) * (rf as i128) / (SCALE as i128)) as i64,
+                        BinOp::Div => ((lf as i128) * (SCALE as i128) / (rf as i128)) as i64,
+                        BinOp::Mod => (lf % rf),
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => return Err(AxityError::rt("bitwise requires int")),
+                        BinOp::Lt => if lf < rf {1} else {0},
+                        BinOp::Le => if lf <= rf {1} else {0},
+                        BinOp::Gt => if lf > rf {1} else {0},
+                        BinOp::Ge => if lf >= rf {1} else {0},
+                        BinOp::Eq => if lf == rf {1} else {0},
+                        BinOp::Ne => if lf != rf {1} else {0},
+                        BinOp::And | BinOp::Or => return Err(AxityError::rt("logical on flt")),
+                    };
+                    Ok(match op { BinOp::Add|BinOp::Sub|BinOp::Mul|BinOp::Div => Value::Flt(v), _ => Value::Int(v) })
+                }
                 (Value::Int(li), Value::Bool(rb)) | (Value::Bool(rb), Value::Int(li)) => {
                     let ri = if rb { 1 } else { 0 };
                     let v = match op {
@@ -148,6 +451,12 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                         BinOp::Sub => li - ri,
                         BinOp::Mul => li * ri,
                         BinOp::Div => li / ri,
+                        BinOp::Mod => if ri == 0 { li } else { li % ri },
+                        BinOp::BitAnd => li & ri,
+                        BinOp::BitOr => li | ri,
+                        BinOp::BitXor => li ^ ri,
+                        BinOp::Shl => li << ri,
+                        BinOp::Shr => li >> ri,
                         BinOp::Lt => if li < ri {1} else {0},
                         BinOp::Le => if li <= ri {1} else {0},
                         BinOp::Gt => if li > ri {1} else {0},
@@ -173,6 +482,12 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                         BinOp::Sub => li - ri,
                         BinOp::Mul => li * ri,
                         BinOp::Div => if ri==0 { li } else { li / ri },
+                        BinOp::Mod => if ri==0 { li } else { li % ri },
+                        BinOp::BitAnd => li & ri,
+                        BinOp::BitOr => li | ri,
+                        BinOp::BitXor => li ^ ri,
+                        BinOp::Shl => li << ri,
+                        BinOp::Shr => li >> ri,
                         BinOp::Lt => if li < ri {1} else {0},
                         BinOp::Le => if li <= ri {1} else {0},
                         BinOp::Gt => if li > ri {1} else {0},
@@ -203,6 +518,21 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 _ => Err(AxityError::rt("! requires bool"))
             }
         }
+        Expr::UnaryNeg{ expr, .. } => {
+            let v = eval_expr(p, expr, rt, out)?;
+            match v {
+                Value::Int(i) => Ok(Value::Int(-i)),
+                Value::Flt(f) => Ok(Value::Flt(-f)),
+                _ => Err(AxityError::rt("unary - requires int or flt"))
+            }
+        }
+        Expr::UnaryBitNot{ expr, .. } => {
+            let v = eval_expr(p, expr, rt, out)?;
+            match v {
+                Value::Int(i) => Ok(Value::Int(!i)),
+                _ => Err(AxityError::rt("~ requires int"))
+            }
+        }
         Expr::New(name, args, _) => {
             let mut fields = std::collections::HashMap::new();
             for it in &p.items {
@@ -216,6 +546,11 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                                 crate::types::Type::Class(_) => Value::Object(Rc::new(RefCell::new(Object{ class: String::new(), fields: HashMap::new() }))),
                                 crate::types::Type::Bool => Value::Bool(false),
                                 crate::types::Type::Map(_) => Value::Map(Rc::new(RefCell::new(HashMap::new()))),
+                                crate::types::Type::Flt => Value::Flt(0),
+                                crate::types::Type::Obj => Value::Obj(Rc::new(RefCell::new(HashMap::new()))),
+                                crate::types::Type::Fn(_, _) => Value::Int(0),
+                                crate::types::Type::Buffer => Value::Buffer(Rc::new(RefCell::new(Vec::new()))),
+                                crate::types::Type::Any => Value::Int(0),
                             };
                             fields.insert(f.name.clone(), dv);
                         }
@@ -240,6 +575,9 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                     let b = rc.borrow();
                     b.fields.get(field).cloned().ok_or_else(|| AxityError::rt("unknown field"))
                 }
+                Value::Obj(rc) => {
+                    Ok(rc.borrow().get(field).cloned().unwrap_or(Value::Int(0)))
+                }
                 _ => Err(AxityError::rt("member access on non-object"))
             }
         }
@@ -254,6 +592,29 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                     Ok(vsb[idx].clone())
                 }
                 _ => Err(AxityError::rt("index on non-array"))
+            }
+        }
+        Expr::CallCallee{ callee, args, .. } => {
+            let fval = eval_expr(p, callee, rt, out)?;
+            match fval {
+                Value::Lambda(l) => {
+                    rt.push_scope();
+                    for (i, par) in l.params.iter().enumerate() {
+                        let av = if let Some(arg) = args.get(i) { eval_expr(p, arg, rt, out)? } else { Value::Int(0) };
+                        rt.set(par.name.clone(), av);
+                    }
+                    for st in &l.body {
+                        match exec_stmt(p, st, rt, out)? {
+                            Control::Next => {}
+                            Control::Return(v) => { rt.pop_scope(); return Ok(v); }
+                            Control::Retry => {}
+                            Control::Throw(e) => { rt.pop_scope(); return Err(AxityError::rt(&format!("uncaught exception: {}", fmt_value(&e, 2)))); }
+                        }
+                    }
+                    rt.pop_scope();
+                    Ok(Value::Int(0))
+                }
+                _ => Err(AxityError::rt("callee is not function"))
             }
         }
         Expr::MethodCall{ object, name, args, .. } => {
@@ -296,6 +657,65 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let mut i = st;
                 while (step > 0 && i < en) || (step < 0 && i > en) { v.push(Value::Int(i)); i += step; }
                 Ok(Value::Array(Rc::new(RefCell::new(v))))
+            } else if name == "buffer_new" {
+                if args.len() != 1 { return Err(AxityError::rt("buffer_new expects size")); }
+                let sz = match eval_expr(p, &args[0], rt, out)? { Value::Int(i) => i as usize, _ => return Err(AxityError::rt("size must be int")) };
+                Ok(Value::Buffer(Rc::new(RefCell::new(vec![0u8; sz]))))
+            } else if name == "buffer_len" {
+                if args.len() != 1 { return Err(AxityError::rt("buffer_len expects buffer")); }
+                match eval_expr(p, &args[0], rt, out)? {
+                    Value::Buffer(b) => Ok(Value::Int(b.borrow().len() as i64)),
+                    _ => Err(AxityError::rt("arg must be buffer"))
+                }
+            } else if name == "buffer_get" {
+                if args.len() != 2 { return Err(AxityError::rt("buffer_get expects (buffer, index)")); }
+                let b = eval_expr(p, &args[0], rt, out)?;
+                let idx = match eval_expr(p, &args[1], rt, out)? { Value::Int(i) => i as usize, _ => return Err(AxityError::rt("index must be int")) };
+                match b {
+                    Value::Buffer(buf) => {
+                        let bb = buf.borrow();
+                        if idx >= bb.len() { return Err(AxityError::rt("index out of bounds")); }
+                        Ok(Value::Int(bb[idx] as i64))
+                    }
+                    _ => Err(AxityError::rt("first arg must be buffer"))
+                }
+            } else if name == "buffer_set" {
+                if args.len() != 3 { return Err(AxityError::rt("buffer_set expects (buffer, index, byte)")); }
+                let b = eval_expr(p, &args[0], rt, out)?;
+                let idx = match eval_expr(p, &args[1], rt, out)? { Value::Int(i) => i as usize, _ => return Err(AxityError::rt("index must be int")) };
+                let byte = match eval_expr(p, &args[2], rt, out)? { Value::Int(i) => i as u8, _ => return Err(AxityError::rt("byte must be int")) };
+                match b {
+                    Value::Buffer(buf) => {
+                        let mut bb = buf.borrow_mut();
+                        if idx >= bb.len() { return Err(AxityError::rt("index out of bounds")); }
+                        bb[idx] = byte;
+                        Ok(Value::Int(idx as i64))
+                    }
+                    _ => Err(AxityError::rt("first arg must be buffer"))
+                }
+            } else if name == "buffer_push" {
+                if args.len() != 2 { return Err(AxityError::rt("buffer_push expects (buffer, byte)")); }
+                let b = eval_expr(p, &args[0], rt, out)?;
+                let byte = match eval_expr(p, &args[1], rt, out)? { Value::Int(i) => i as u8, _ => return Err(AxityError::rt("byte must be int")) };
+                match b {
+                    Value::Buffer(buf) => { buf.borrow_mut().push(byte); Ok(Value::Int(buf.borrow().len() as i64)) }
+                    _ => Err(AxityError::rt("first arg must be buffer"))
+                }
+            } else if name == "buffer_from_string" {
+                if args.len() != 1 { return Err(AxityError::rt("buffer_from_string expects string")); }
+                match eval_expr(p, &args[0], rt, out)? {
+                    Value::Str(s) => Ok(Value::Buffer(Rc::new(RefCell::new(s.into_bytes())))),
+                    _ => Err(AxityError::rt("arg must be string"))
+                }
+            } else if name == "buffer_to_string" {
+                if args.len() != 1 { return Err(AxityError::rt("buffer_to_string expects buffer")); }
+                match eval_expr(p, &args[0], rt, out)? {
+                    Value::Buffer(b) => {
+                        let bb = b.borrow();
+                        Ok(Value::Str(String::from_utf8_lossy(&bb).to_string()))
+                    }
+                    _ => Err(AxityError::rt("arg must be buffer"))
+                }
             } else if name == "map_remove" {
                 if args.len() != 2 { return Err(AxityError::rt("map_remove expects (map, key)")); }
                 let m = eval_expr(p, &args[0], rt, out)?;
@@ -561,10 +981,45 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 if args.len() != 1 { return Err(AxityError::rt("to_string expects one argument")); }
                 let i = eval_expr(p, &args[0], rt, out)?;
                 match i { Value::Int(ii) => Ok(Value::Str(ii.to_string())), _ => Err(AxityError::rt("to_string expects int")) }
+            } else if name == "sin" || name == "cos" || name == "tan" {
+                if args.len() != 1 { return Err(AxityError::rt("trig expects one argument (radians)")); }
+                let x = eval_expr(p, &args[0], rt, out)?;
+                let xr = match x {
+                    Value::Flt(f) => (f as f64) / (SCALE as f64),
+                    Value::Int(i) => (i as f64),
+                    _ => return Err(AxityError::rt("trig arg must be flt or int"))
+                };
+                let val = if name=="sin" { xr.sin() } else if name=="cos" { xr.cos() } else { xr.tan() };
+                Ok(Value::Flt((val * SCALE as f64).round() as i64))
             } else {
-                let mut ev_args = Vec::new();
-                for a in args { ev_args.push(eval_expr(p, a, rt, out)?); }
-                call_func(name, &ev_args, p, rt, out)
+                // try lambda in variables first, else named function
+                if let Some(val) = rt.get(&name) {
+                    if let Value::Lambda(l) = val {
+                        rt.push_scope();
+                        for (i, par) in l.params.iter().enumerate() {
+                            let av = if let Some(arg) = args.get(i) { eval_expr(p, arg, rt, out)? } else { Value::Int(0) };
+                            rt.set(par.name.clone(), av);
+                        }
+                        for st in &l.body {
+                            match exec_stmt(p, st, rt, out)? {
+                                Control::Next => {}
+                                Control::Return(v) => { rt.pop_scope(); return Ok(v); }
+                                Control::Retry => {}
+                                Control::Throw(e) => { rt.pop_scope(); return Err(AxityError::rt(&format!("uncaught exception: {}", fmt_value(&e, 2)))); }
+                            }
+                        }
+                        rt.pop_scope();
+                        Ok(Value::Int(0))
+                    } else {
+                        let mut ev_args = Vec::new();
+                        for a in args { ev_args.push(eval_expr(p, a, rt, out)?); }
+                        call_func(name, &ev_args, p, rt, out)
+                    }
+                } else {
+                    let mut ev_args = Vec::new();
+                    for a in args { ev_args.push(eval_expr(p, a, rt, out)?); }
+                    call_func(name, &ev_args, p, rt, out)
+                }
             }
         }
     }
@@ -574,7 +1029,14 @@ fn call_func(name: &str, args: &[Value], p: &Program, rt: &mut Runtime, out: &mu
     let f = p.items.iter().find_map(|it| if let Item::Func(f)=it { if f.name==name { Some(f) } else { None } } else { None }).ok_or_else(|| AxityError::rt("undefined function"))?;
     rt.push_scope();
     for (i,par) in f.params.iter().enumerate() { rt.set(par.name.clone(), args.get(i).cloned().unwrap_or(Value::Int(0))); }
-    for st in &f.body { match exec_stmt(p, st, rt, out)? { Control::Next => {}, Control::Return(v) => { rt.pop_scope(); return Ok(v); } } }
+    for st in &f.body {
+        match exec_stmt(p, st, rt, out)? {
+            Control::Next => {},
+            Control::Return(v) => { rt.pop_scope(); return Ok(v); },
+            Control::Retry => {},
+            Control::Throw(e) => { rt.pop_scope(); return Err(AxityError::rt(&format!("uncaught exception: {}", fmt_value(&e, 2)))); }
+        }
+    }
     rt.pop_scope();
     Ok(Value::Int(0))
 }
@@ -590,17 +1052,31 @@ fn call_method(name: &str, args: &[Value], p: &Program, rt: &mut Runtime, out: &
     } else { None }).ok_or_else(|| AxityError::rt("undefined method"))?;
     rt.push_scope();
     for (i,par) in f.params.iter().enumerate() { rt.set(par.name.clone(), if i==0 { args.get(0).cloned().unwrap() } else { rest.get(i-1).cloned().unwrap_or(Value::Int(0)) }); }
-    for st in &f.body { match exec_stmt(p, st, rt, out)? { Control::Next => {}, Control::Return(v) => { rt.pop_scope(); return Ok(v); } } }
+    for st in &f.body {
+        match exec_stmt(p, st, rt, out)? {
+            Control::Next => {},
+            Control::Return(v) => { rt.pop_scope(); return Ok(v); },
+            Control::Retry => {},
+            Control::Throw(e) => { rt.pop_scope(); return Err(AxityError::rt(&format!("uncaught exception: {}", fmt_value(&e, 2)))); }
+        }
+    }
     rt.pop_scope();
     Ok(Value::Int(0))
 }
 
-enum Control { Next, Return(Value) }
+enum Control { Next, Return(Value), Retry, Throw(Value) }
 
 pub fn fmt_value(v: &Value, depth: usize) -> String {
     if depth == 0 { return String::from("..."); }
     match v {
         Value::Int(i) => i.to_string(),
+        Value::Flt(f) => {
+            let sign = if *f < 0 { "-" } else { "" };
+            let absf = f.abs();
+            let ip = absf / SCALE;
+            let fp = absf % SCALE;
+            format!("{}{}.{}", sign, ip, format!("{:06}", fp))
+        }
         Value::Str(s) => s.clone(),
         Value::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
         Value::Array(a) => {
@@ -614,6 +1090,15 @@ pub fn fmt_value(v: &Value, depth: usize) -> String {
             for (k, val) in m.borrow().iter() { parts.push(format!("{}: {}", k, fmt_value(val, depth-1))); }
             format!("{{{}}}", parts.join(", "))
         }
+        Value::Obj(m) => {
+            let mut parts = Vec::new();
+            for (k, val) in m.borrow().iter() { parts.push(format!("{}: {}", k, fmt_value(val, depth-1))); }
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Buffer(b) => {
+            format!("<buffer len={}>", b.borrow().len())
+        }
+        Value::Lambda(_) => "<lambda>".to_string(),
         Value::Object(rc) => {
             let b = rc.borrow();
             let mut parts = Vec::new();
