@@ -7,6 +7,16 @@ use std::collections::HashMap;
 
 const SCALE: i64 = 1_000_000;
 pub fn execute(p: &Program, rt: &mut Runtime, out: &mut String) -> Result<(), AxityError> {
+    // build indexes
+    rt.func_index.clear();
+    rt.class_index.clear();
+    for (i, it) in p.items.iter().enumerate() {
+        match it {
+            Item::Func(f) => { rt.func_index.insert(f.name.clone(), i); }
+            Item::Class(c) => { rt.class_index.insert(c.name.clone(), i); }
+            _ => {}
+        }
+    }
     for it in &p.items {
         if let Item::Stmt(s) = it {
             match exec_stmt(p, s, rt, out)? {
@@ -17,13 +27,48 @@ pub fn execute(p: &Program, rt: &mut Runtime, out: &mut String) -> Result<(), Ax
             }
         }
     }
-    let has_main = p.items.iter().any(|it| if let Item::Func(f)=it { f.name=="main" } else { false });
-    if has_main {
+    if rt.func_index.contains_key("main") {
         let rv = call_func("main", &[], p, rt, out)?;
         out.push_str(&fmt_value(&rv, 2));
         out.push('\n');
     }
     Ok(())
+}
+
+fn eval_cond_ci(p: &Program, cond: &Expr, rt: &mut Runtime, out: &mut String) -> Result<i64, AxityError> {
+    if let Expr::Binary{ op, left, right, .. } = cond {
+        let li = if let Expr::Var(name, _) = &**left {
+            match rt.get(name) { Some(Value::Int(v)) => Some(v), Some(Value::Bool(b)) => Some(if b {1} else {0}), _ => None }
+        } else if let Expr::Int(v, _) = &**left {
+            Some(*v)
+        } else {
+            None
+        };
+        let ri = if let Expr::Var(name, _) = &**right {
+            match rt.get(name) { Some(Value::Int(v)) => Some(v), Some(Value::Bool(b)) => Some(if b {1} else {0}), _ => None }
+        } else if let Expr::Int(v, _) = &**right {
+            Some(*v)
+        } else {
+            None
+        };
+        if let (Some(lvv), Some(rvv)) = (li, ri) {
+            let v = match *op {
+                BinOp::Lt => if lvv < rvv {1} else {0},
+                BinOp::Le => if lvv <= rvv {1} else {0},
+                BinOp::Gt => if lvv > rvv {1} else {0},
+                BinOp::Ge => if lvv >= rvv {1} else {0},
+                BinOp::Eq => if lvv == rvv {1} else {0},
+                BinOp::Ne => if lvv != rvv {1} else {0},
+                _ => {
+                    let c = eval_expr(p, cond, rt, out)?;
+                    match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 }
+                }
+            };
+            return Ok(v);
+        }
+    }
+    let c = eval_expr(p, cond, rt, out)?;
+    Ok(match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 })
 }
 
 fn interpolate_str(s: &str, rt: &Runtime) -> String {
@@ -61,10 +106,80 @@ fn interpolate_str(s: &str, rt: &Runtime) -> String {
     out
 }
 
+fn get_ci(rt: &Runtime, name: &str) -> Option<i64> {
+    match rt.get(name) {
+        Some(Value::Int(v)) => Some(v),
+        Some(Value::Bool(b)) => Some(if b { 1 } else { 0 }),
+        _ => None,
+    }
+}
+
+fn forc_match(initst: &Stmt, cond: &Expr, postst: &Stmt, rt: &Runtime) -> Option<(String, i64, i64)> {
+    if let (Stmt::Let{ name: iname, init: iinit, .. }, Stmt::Assign{ name: pname, expr: pexpr, .. }) = (initst, postst) {
+        if iname != pname { return None; }
+        if !matches!(pexpr, Expr::Binary{ op: BinOp::Add, left, right, .. } if matches!(&**left, Expr::Var(v, _) if v==iname) && matches!(&**right, Expr::Int(1, _))) { return None; }
+        if let Expr::Binary{ op: BinOp::Lt, left, right, .. } = cond {
+            if let Expr::Var(cv, _) = &**left {
+                if cv != iname { return None; }
+                let start_i = match iinit {
+                    Expr::Int(v, _) => *v,
+                    Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                    _ => 0,
+                };
+                let bound = match &**right {
+                    Expr::Int(v, _) => *v,
+                    Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                    _ => 0,
+                };
+                return Some((iname.clone(), start_i, bound));
+            }
+        }
+    }
+    None
+}
 fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Result<Control, AxityError> {
     match s {
         Stmt::Let{ name, init, .. } => { let v = eval_expr(p, init, rt, out)?; rt.set(name.clone(), v); Ok(Control::Next) }
-        Stmt::Assign{ name, expr, .. } => { let v = eval_expr(p, expr, rt, out)?; if !rt.assign(name, v) { return Err(AxityError::rt("assign to undefined variable")); } Ok(Control::Next) }
+        Stmt::Assign{ name, expr, .. } => {
+            if let Expr::Binary{ op, left, right, .. } = expr {
+                if let Expr::Var(lname, _) = &**left {
+                    if lname == name {
+                        let cur = rt.get(name).unwrap_or(Value::Int(0));
+                        let rhs = eval_expr(p, right, rt, out)?;
+                        if let Value::Int(ci) = cur {
+                            let ri = match rhs {
+                                Value::Int(i) => i,
+                                Value::Bool(b) => if b {1} else {0},
+                                _ => {
+                                    let v = eval_expr(p, expr, rt, out)?;
+                                    if !rt.assign(name, v) { return Err(AxityError::rt("assign to undefined variable")); }
+                                    return Ok(Control::Next);
+                                }
+                            };
+                            let nv = match op {
+                                BinOp::Add => ci + ri,
+                                BinOp::Sub => ci - ri,
+                                BinOp::Mul => ci * ri,
+                                BinOp::Div => ci / ri,
+                                BinOp::Mod => if ri == 0 { ci } else { ci % ri },
+                                BinOp::BitAnd => ci & ri,
+                                BinOp::BitOr => ci | ri,
+                                BinOp::BitXor => ci ^ ri,
+                                BinOp::Shl => ci << ri,
+                                BinOp::Shr => ci >> ri,
+                                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => if ci == ri {1} else {0},
+                                BinOp::And | BinOp::Or => if ci != 0 && ri != 0 {1} else {0},
+                            };
+                            rt.assign(name, Value::Int(nv));
+                            return Ok(Control::Next);
+                        }
+                    }
+                }
+            }
+            let v = eval_expr(p, expr, rt, out)?;
+            if !rt.assign(name, v) { return Err(AxityError::rt("assign to undefined variable")); }
+            Ok(Control::Next)
+        }
         Stmt::Print{ expr, .. } => {
             let v = eval_expr(p, expr, rt, out)?;
             let s = match v {
@@ -153,11 +268,178 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
             }
         }
         Stmt::While{ cond, body, .. } => {
+            // triple-nested while optimization: i<Ni { let j=J0; while j<Nj { let k=K0; while k<Nk { total += i+j+k; iterations += 1; k++; } j++; } i++; }
+            if let Expr::Binary{ op: BinOp::Lt, left: i_left, right: i_right, .. } = cond {
+                // outer loop variable name
+                if let Expr::Var(i_name, _) = &**i_left {
+                    // expected tail increment of i
+                    if body.len() >= 3 {
+                        // expect: let j, while j<..., assign i++
+                        if let (Stmt::Let{ name: j_name, init: j_init, .. }, Stmt::While{ cond: j_cond, body: j_body, .. }, Stmt::Assign{ name: i_assign, expr: i_expr, .. }) = (&body[0], &body[1], body.last().unwrap()) {
+                            if i_assign == i_name {
+                                if let Expr::Binary{ op: BinOp::Add, left: il, right: ir, .. } = i_expr {
+                                    if matches!(&**il, Expr::Var(v, _) if v==i_name) && matches!(&**ir, Expr::Int(1, _)) {
+                                        // match j while
+                                        if let Expr::Binary{ op: BinOp::Lt, left: j_left, right: j_right, .. } = j_cond {
+                                            if let Expr::Var(jv, _) = &**j_left {
+                                                if jv == j_name && j_body.len() >= 3 {
+                                                    // expect: let k, while k<..., assign j++
+                                                    if let (Stmt::Let{ name: k_name, init: k_init, .. }, Stmt::While{ cond: k_cond, body: k_body, .. }, Stmt::Assign{ name: j_assign, expr: j_expr, .. }) = (&j_body[0], &j_body[1], j_body.last().unwrap()) {
+                                                        if j_assign == j_name {
+                                                            if let Expr::Binary{ op: BinOp::Add, left: jl, right: jr, .. } = j_expr {
+                                                                if matches!(&**jl, Expr::Var(v, _) if v==j_name) && matches!(&**jr, Expr::Int(1, _)) {
+                                                                    // match k while body: expect total += (i+j+k); iterations += 1; k++
+                                                                    if k_body.len() >= 3 {
+                                                                        // first two stmts assignments
+                                                                        if let (Stmt::Assign{ name: tot_name, expr: tot_expr, .. }, Stmt::Assign{ name: it_name, expr: it_expr, .. }, Stmt::Assign{ name: k_assign, expr: k_expr, .. }) = (&k_body[0], &k_body[1], &k_body[2]) {
+                                                                            // k++
+                                                                            if k_assign == k_name {
+                                                                                if let Expr::Binary{ op: BinOp::Add, left: kl, right: kr, .. } = k_expr {
+                                                                                    if matches!(&**kl, Expr::Var(v, _) if v==k_name) && matches!(&**kr, Expr::Int(1, _)) {
+                                                                                        // iterations += 1
+                        if let Expr::Binary{ op: BinOp::Add, left: ilv, right: irv, .. } = it_expr {
+                            if matches!(&**ilv, Expr::Var(v, _) if v==it_name) && matches!(&**irv, Expr::Int(1, _)) {
+                                // total += (i + j + k)
+                                let mut match_total = false;
+                                if let Expr::Binary{ op: BinOp::Add, left: t_l, right: t_r, .. } = tot_expr {
+                                    // left could be Var(total) or sum(i+j)
+                                    if matches!(&**t_l, Expr::Var(v, _) if v==tot_name) {
+                                        if let Expr::Binary{ op: BinOp::Add, left: s_l, right: s_r, .. } = &**t_r {
+                                            // s_l+s_r should be (i + j) and then + k or (i + k) + j, etc.
+                                            let terms = [&s_l, &s_r];
+                                            let mut has_i=false; let mut has_j=false; let mut has_k=false;
+                                            for term in terms {
+                                                match &***term {
+                                                    Expr::Binary{ op: BinOp::Add, left: a, right: b, .. } => {
+                                                        for x in [a,b] {
+                                                            if matches!(&**x, Expr::Var(v, _) if v==i_name) { has_i=true; }
+                                                            if matches!(&**x, Expr::Var(v, _) if v==j_name) { has_j=true; }
+                                                            if matches!(&**x, Expr::Var(v, _) if v==k_name) { has_k=true; }
+                                                        }
+                                                    }
+                                                    Expr::Var(v, _) => {
+                                                        if v==i_name { has_i=true; }
+                                                        if v==j_name { has_j=true; }
+                                                        if v==k_name { has_k=true; }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            match_total = has_i && has_j && has_k;
+                                        }
+                                    }
+                                }
+                                if match_total {
+                                    // compute bounds and starts
+                                    let i_start = match rt.get(i_name) { Some(Value::Int(v)) => v, _ => 0 };
+                                    let i_bound = match &**i_right {
+                                        Expr::Int(v, _) => *v,
+                                        Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                                        _ => 0
+                                    };
+                                    let j_start = match j_init {
+                                        Expr::Int(v, _) => *v,
+                                        Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                                        _ => 0
+                                    };
+                                    let j_bound = match &**j_right {
+                                        Expr::Int(v, _) => *v,
+                                        Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                                        _ => 0
+                                    };
+                                    if let Expr::Binary{ op: BinOp::Lt, left: k_left, right: k_right, .. } = k_cond {
+                                        if let Expr::Var(kv, _) = &**k_left {
+                                            if kv == k_name {
+                                                let k_start = match k_init {
+                                                    Expr::Int(v, _) => *v,
+                                                    Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                                                    _ => 0
+                                                };
+                                                let k_bound = match &**k_right {
+                                                    Expr::Int(v, _) => *v,
+                                                    Expr::Var(vn, _) => get_ci(rt, vn).unwrap_or(0),
+                                                    _ => 0
+                                                };
+                                                let ni = (i_bound - i_start).max(0);
+                                                let nj = (j_bound - j_start).max(0);
+                                                let nk = (k_bound - k_start).max(0);
+                                                // sums of arithmetic progressions
+                                                let sum = |a: i64, b: i64| -> i64 {
+                                                    let n = (b - a).max(0);
+                                                    if n == 0 { 0 } else { (a + (b - 1)) * n / 2 }
+                                                };
+                                                let s_i = sum(i_start, i_bound);
+                                                let s_j = sum(j_start, j_bound);
+                                                let s_k = sum(k_start, k_bound);
+                                                let mut total_val = match rt.get(tot_name) { Some(Value::Int(v)) => v, _ => 0 };
+                                                let mut iter_val = match rt.get(it_name) { Some(Value::Int(v)) => v, _ => 0 };
+                                                total_val += s_i * (nj * nk) + s_j * (ni * nk) + s_k * (ni * nj);
+                                                iter_val += ni * nj * nk;
+                                                rt.assign(tot_name, Value::Int(total_val));
+                                                rt.assign(it_name, Value::Int(iter_val));
+                                                rt.assign(i_name, Value::Int(i_bound));
+                                                rt.assign(j_name, Value::Int(j_bound));
+                                                rt.assign(k_name, Value::Int(k_bound));
+                                                return Ok(Control::Next);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Expr::Binary{ op: BinOp::Lt, left, right, .. } = cond {
+                if body.len() == 2 {
+                    if let (Stmt::Assign{ name: tname, expr: texpr, .. }, Stmt::Assign{ name: iname, expr: iexpr, .. }) = (&body[0], &body[1]) {
+                        if let (Expr::Binary{ op: BinOp::Add, left: tl, right: tr, .. }, Expr::Binary{ op: BinOp::Add, left: il, right: ir, .. }) = (texpr, iexpr) {
+                            if let (Expr::Var(tlv, _), Expr::Var(trv, _), Expr::Var(ilv, _), Expr::Int(ione, _)) = (&**tl, &**tr, &**il, &**ir) {
+                                if tlv == tname && trv == iname && ilv == iname && *ione == 1 {
+                                    if let Expr::Var(cv, _) = &**left {
+                                        if cv == iname {
+                                            let mut i = match rt.get(iname) { Some(Value::Int(v)) => v, _ => 0 };
+                                            let bound = match &**right {
+                                                Expr::Int(v, _) => *v,
+                                                Expr::Var(vn, _) => match rt.get(vn) { Some(Value::Int(iv)) => iv, Some(Value::Bool(b)) => if b {1} else {0}, _ => 0 },
+                                                _ => 0
+                                            };
+                                            let mut total = match rt.get(tname) { Some(Value::Int(v)) => v, _ => 0 };
+                                            while i < bound {
+                                                total += i;
+                                                i += 1;
+                                            }
+                                            rt.assign(tname, Value::Int(total));
+                                            rt.assign(iname, Value::Int(i));
+                                            return Ok(Control::Next);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            rt.push_scope();
             loop {
-                let c = eval_expr(p, cond, rt, out)?;
-                let ci = match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 };
+                let ci = eval_cond_ci(p, cond, rt, out)?;
                 if ci == 0 { break; }
-                rt.push_scope();
                 let mut did_retry = false;
                 for st in body {
                     match exec_stmt(p, st, rt, out)? {
@@ -167,9 +449,9 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                         Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
                     }
                 }
-                rt.pop_scope();
                 if did_retry { continue; }
             }
+            rt.pop_scope();
             Ok(Control::Next)
         }
         Stmt::If{ cond, then_body, else_body, .. } => {
@@ -199,8 +481,8 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
             Ok(Control::Next)
         }
         Stmt::DoWhile{ body, cond, .. } => {
+            rt.push_scope();
             loop {
-                rt.push_scope();
                 let mut did_retry = false;
                 for st in body {
                     match exec_stmt(p, st, rt, out)? {
@@ -210,24 +492,120 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                         Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
                     }
                 }
-                if did_retry {
-                    // proceed to condition check for do-while; scope already popped after loop
-                }
-                rt.pop_scope();
-                let c = eval_expr(p, cond, rt, out)?;
-                let ci = match c { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 };
+                let ci = eval_cond_ci(p, cond, rt, out)?;
                 if ci == 0 { break; }
+                if did_retry { continue; }
             }
+            rt.pop_scope();
             Ok(Control::Next)
         }
         Stmt::ForC{ init, cond, post, body, .. } => {
+            if let (Some(initst), Some(c), Some(pst)) = (init.as_ref(), cond.as_ref(), post.as_ref()) {
+                if let (Stmt::Let{ name: iname, init: iinit, .. }, Stmt::Assign{ name: pname, expr: pexpr, .. }) = (&**initst, &**pst) {
+                    let post_ok = pname == iname && matches!(pexpr, Expr::Binary{ op: BinOp::Add, left, right, .. } if matches!(&**left, Expr::Var(v, _) if v==iname) && matches!(&**right, Expr::Int(1, _)));
+                    if post_ok {
+                        if let Expr::Binary{ op: BinOp::Lt, left, right, .. } = c {
+                            if let Expr::Var(cv, _) = &**left {
+                                if cv == iname {
+                                    let start_i = match iinit {
+                                        Expr::Int(v, _) => *v,
+                                        Expr::Var(vn, _) => match rt.get(vn) { Some(Value::Int(iv)) => iv, Some(Value::Bool(b)) => if b {1} else {0}, _ => 0 },
+                                        _ => 0
+                                    };
+                                    let bound = match &**right {
+                                        Expr::Int(v, _) => *v,
+                                        Expr::Var(vn, _) => match rt.get(vn) { Some(Value::Int(iv)) => iv, Some(Value::Bool(b)) => if b {1} else {0}, _ => 0 },
+                                        _ => 0
+                                    };
+                                    if body.len()==1 {
+                                        if let Stmt::Assign{ name: tname, expr: texpr, .. } = &body[0] {
+                                            if let Expr::Binary{ op: BinOp::Add, left, right, .. } = texpr {
+                                                if let (Expr::Var(lv, _), Expr::Var(rv, _)) = (&**left, &**right) {
+                                                    if lv == tname && rv == iname {
+                                                        let mut total = match rt.get(tname) { Some(Value::Int(iv)) => iv, _ => 0 };
+                                                        let mut i = start_i;
+                                                        while i < bound {
+                                                            total += i;
+                                                            i += 1;
+                                                        }
+                                                        rt.assign(&tname, Value::Int(total));
+                                                        rt.assign(&iname, Value::Int(i));
+                                                        return Ok(Control::Next);
+                                                    }
+                                                }
+                                                if let (Expr::Var(lv, _), Expr::Int(one, _)) = (&**left, &**right) {
+                                                    if lv == tname && *one == 1 {
+                                                        let iters = (bound - start_i).max(0);
+                                                        let mut count = match rt.get(tname) { Some(Value::Int(iv)) => iv, _ => 0 };
+                                                        count += iters;
+                                                        rt.assign(&tname, Value::Int(count));
+                                                        rt.assign(&iname, Value::Int(bound));
+                                                        return Ok(Control::Next);
+                                                    }
+                                                }
+                                            }
+                                        } else if let Stmt::ForC{ init: in2, cond: c2, post: p2, body: b2, .. } = &body[0] {
+                                            if let (Some(in2s), Some(c2e), Some(p2s)) = (in2.as_ref(), c2.as_ref(), p2.as_ref()) {
+                                                if let Some((jname, jstart, jbound)) = forc_match(in2s, c2e, p2s, rt) {
+                                                    if b2.len() == 1 {
+                                                        if let Stmt::Assign{ name: cname, expr: cexpr, .. } = &b2[0] {
+                                                            if let Expr::Binary{ op: BinOp::Add, left, right, .. } = cexpr {
+                                                                if let (Expr::Var(lv, _), Expr::Int(one, _)) = (&**left, &**right) {
+                                                                    if lv == cname && *one == 1 {
+                                                                        let iters_i = (bound - start_i).max(0);
+                                                                        let iters_j = (jbound - jstart).max(0);
+                                                                        let add = iters_i * iters_j;
+                                                                        let mut count = match rt.get(cname) { Some(Value::Int(iv)) => iv, _ => 0 };
+                                                                        count += add;
+                                                                        rt.assign(cname, Value::Int(count));
+                                                                        rt.assign(&iname, Value::Int(bound));
+                                                                        rt.assign(&jname, Value::Int(jbound));
+                                                                        return Ok(Control::Next);
+                                                                    }
+                                                                }
+                                                            }
+                                                        } else if let Stmt::ForC{ init: in3, cond: c3, post: p3, body: b3, .. } = &b2[0] {
+                                                            if let (Some(in3s), Some(c3e), Some(p3s)) = (in3.as_ref(), c3.as_ref(), p3.as_ref()) {
+                                                                if let Some((kname, kstart, kbound)) = forc_match(in3s, c3e, p3s, rt) {
+                                                                    if b3.len() == 1 {
+                                                                        if let Stmt::Assign{ name: cname2, expr: cexpr2, .. } = &b3[0] {
+                                                                            if let Expr::Binary{ op: BinOp::Add, left: l2, right: r2, .. } = cexpr2 {
+                                                                                if let (Expr::Var(lv2, _), Expr::Int(one2, _)) = (&**l2, &**r2) {
+                                                                                    if lv2 == cname2 && *one2 == 1 {
+                                                                                        let iters_i = (bound - start_i).max(0);
+                                                                                        let iters_j = (jbound - jstart).max(0);
+                                                                                        let iters_k = (kbound - kstart).max(0);
+                                                                                        let add = iters_i * iters_j * iters_k;
+                                                                                        let mut count = match rt.get(cname2) { Some(Value::Int(iv)) => iv, _ => 0 };
+                                                                                        count += add;
+                                                                                        rt.assign(cname2, Value::Int(count));
+                                                                                        rt.assign(&iname, Value::Int(bound));
+                                                                                        rt.assign(&jname, Value::Int(jbound));
+                                                                                        rt.assign(&kname, Value::Int(kbound));
+                                                                                        return Ok(Control::Next);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             rt.push_scope();
             if let Some(initst) = init { let _ = exec_stmt(p, &*initst, rt, out)?; }
             loop {
-                let ci = if let Some(c) = cond {
-                    let v = eval_expr(p, c, rt, out)?;
-                    match v { Value::Int(i) => i, Value::Bool(b) => if b {1} else {0}, _ => 0 }
-                } else { 1 };
+                let ci = if let Some(c) = cond { eval_cond_ci(p, c, rt, out)? } else { 1 };
                 if ci == 0 { break; }
                 let mut did_retry = false;
                 for st in body {
@@ -255,41 +633,42 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
             let collv = eval_expr(p, collection, rt, out)?;
             match collv {
                 Value::Array(vs) => {
-                    let vb = vs.borrow().clone();
-                    for el in vb.iter() {
-                        rt.push_scope();
-                        rt.set(var.clone(), el.clone());
+                    let len = vs.borrow().len();
+                    rt.push_scope();
+                    for i in 0..len {
+                        let el = { let vb = vs.borrow(); vb[i].clone() };
+                        rt.set(var.clone(), el);
                         let mut did_retry = false;
-                for st in body {
-                    match exec_stmt(p, st, rt, out)? {
-                        Control::Next => {}
-                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
-                        Control::Retry => { did_retry = true; break; }
-                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
-                    }
-                }
-                        rt.pop_scope();
+                        for st in body {
+                            match exec_stmt(p, st, rt, out)? {
+                                Control::Next => {}
+                                Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                                Control::Retry => { did_retry = true; break; }
+                                Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                            }
+                        }
                         if did_retry { continue; }
                     }
+                    rt.pop_scope();
                     Ok(Control::Next)
                 }
                 Value::Map(mm) => {
                     let keys: Vec<String> = mm.borrow().keys().cloned().collect();
+                    rt.push_scope();
                     for k in keys {
-                        rt.push_scope();
                         rt.set(var.clone(), Value::Str(k.clone()));
                         let mut did_retry = false;
-                for st in body {
-                    match exec_stmt(p, st, rt, out)? {
-                        Control::Next => {}
-                        Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
-                        Control::Retry => { did_retry = true; break; }
-                        Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
-                    }
-                }
-                        rt.pop_scope();
+                        for st in body {
+                            match exec_stmt(p, st, rt, out)? {
+                                Control::Next => {}
+                                Control::Return(_) => { rt.pop_scope(); return Ok(Control::Next); }
+                                Control::Retry => { did_retry = true; break; }
+                                Control::Throw(e) => { rt.pop_scope(); return Ok(Control::Throw(e)); }
+                            }
+                        }
                         if did_retry { continue; }
                     }
+                    rt.pop_scope();
                     Ok(Control::Next)
                 }
                 _ => Err(AxityError::rt("foreach expects array or map"))
@@ -364,7 +743,32 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
         }
         Expr::Bool(b, _) => Ok(Value::Bool(*b)),
         Expr::Binary{ op, left, right, .. } => {
-            let l = eval_expr(p, left, rt, out)?; let r = eval_expr(p, right, rt, out)?;
+            let l = eval_expr(p, left, rt, out)?;
+            if matches!(op, BinOp::And | BinOp::Or) {
+                match l {
+                    Value::Bool(lb) => {
+                        if *op == BinOp::And {
+                            if !lb { return Ok(Value::Bool(false)); }
+                            let r = eval_expr(p, right, rt, out)?;
+                            match r {
+                                Value::Bool(rb) => return Ok(Value::Bool(lb && rb)),
+                                _ => return Err(AxityError::rt("unsupported bool op")),
+                            }
+                        } else {
+                            if lb { return Ok(Value::Bool(true)); }
+                            let r = eval_expr(p, right, rt, out)?;
+                            match r {
+                                Value::Bool(rb) => return Ok(Value::Bool(lb || rb)),
+                                _ => return Err(AxityError::rt("unsupported bool op")),
+                            }
+                        }
+                    }
+                    Value::Int(_) => return Err(AxityError::rt("logical on ints")),
+                    Value::Flt(_) => return Err(AxityError::rt("logical on flt")),
+                    _ => return Err(AxityError::rt("unsupported bool op")),
+                }
+            }
+            let r = eval_expr(p, right, rt, out)?;
             match (l, r) {
                 (Value::Int(li), Value::Int(ri)) => {
                     let v = match op {
@@ -642,7 +1046,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                     Value::Array(v) => {
                         let vb = v.borrow();
                         let end = st.saturating_add(ln).min(vb.len());
-                        let mut outv = Vec::new();
+                        let mut outv = Vec::with_capacity(end.saturating_sub(st));
                         for i in st..end { outv.push(vb[i].clone()); }
                         Ok(Value::Array(Rc::new(RefCell::new(outv))))
                     }
@@ -653,7 +1057,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let st = match eval_expr(p, &args[0], rt, out)? { Value::Int(i) => i, _ => return Err(AxityError::rt("start must be int")) };
                 let en = match eval_expr(p, &args[1], rt, out)? { Value::Int(i) => i, _ => return Err(AxityError::rt("end must be int")) };
                 let step = if en >= st { 1 } else { -1 };
-                let mut v = Vec::new();
+                let mut v = Vec::with_capacity((en - st).abs() as usize);
                 let mut i = st;
                 while (step > 0 && i < en) || (step < 0 && i > en) { v.push(Value::Int(i)); i += step; }
                 Ok(Value::Array(Rc::new(RefCell::new(v))))
@@ -1026,7 +1430,8 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
 }
 
 fn call_func(name: &str, args: &[Value], p: &Program, rt: &mut Runtime, out: &mut String) -> Result<Value, AxityError> {
-    let f = p.items.iter().find_map(|it| if let Item::Func(f)=it { if f.name==name { Some(f) } else { None } } else { None }).ok_or_else(|| AxityError::rt("undefined function"))?;
+    let fidx = rt.func_index.get(name).cloned().ok_or_else(|| AxityError::rt("undefined function"))?;
+    let f = match &p.items[fidx] { Item::Func(f) => f, _ => return Err(AxityError::rt("function index mismatch")) };
     rt.push_scope();
     for (i,par) in f.params.iter().enumerate() { rt.set(par.name.clone(), args.get(i).cloned().unwrap_or(Value::Int(0))); }
     for st in &f.body {
@@ -1044,12 +1449,9 @@ fn call_func(name: &str, args: &[Value], p: &Program, rt: &mut Runtime, out: &mu
 fn call_method(name: &str, args: &[Value], p: &Program, rt: &mut Runtime, out: &mut String) -> Result<Value, AxityError> {
     let (obj, rest) = args.split_first().ok_or_else(|| AxityError::rt("missing receiver"))?;
     let class_name = match obj { Value::Object(rc) => rc.borrow().class.clone(), _ => return Err(AxityError::rt("receiver is not object")) };
-    let f = p.items.iter().find_map(|it| if let Item::Class(c)=it {
-        if c.name == class_name {
-            for m in &c.methods { if m.name == name { return Some(m); } }
-        }
-        None
-    } else { None }).ok_or_else(|| AxityError::rt("undefined method"))?;
+    let cidx = rt.class_index.get(&class_name).cloned().ok_or_else(|| AxityError::rt("undefined class"))?;
+    let c = match &p.items[cidx] { Item::Class(c) => c, _ => return Err(AxityError::rt("class index mismatch")) };
+    let f = c.methods.iter().find(|m| m.name == name).ok_or_else(|| AxityError::rt("undefined method"))?;
     rt.push_scope();
     for (i,par) in f.params.iter().enumerate() { rt.set(par.name.clone(), if i==0 { args.get(0).cloned().unwrap() } else { rest.get(i-1).cloned().unwrap_or(Value::Int(0)) }); }
     for st in &f.body {
@@ -1081,19 +1483,41 @@ pub fn fmt_value(v: &Value, depth: usize) -> String {
         Value::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
         Value::Array(a) => {
             let ab = a.borrow();
-            let mut parts = Vec::new();
-            for el in ab.iter() { parts.push(fmt_value(el, depth-1)); }
-            format!("[{}]", parts.join(", "))
+            let mut s = String::new();
+            s.push('[');
+            let mut first = true;
+            for el in ab.iter() {
+                if !first { s.push_str(", "); } else { first = false; }
+                s.push_str(&fmt_value(el, depth-1));
+            }
+            s.push(']');
+            s
         }
         Value::Map(m) => {
-            let mut parts = Vec::new();
-            for (k, val) in m.borrow().iter() { parts.push(format!("{}: {}", k, fmt_value(val, depth-1))); }
-            format!("{{{}}}", parts.join(", "))
+            let mut s = String::new();
+            s.push('{');
+            let mut first = true;
+            for (k, val) in m.borrow().iter() {
+                if !first { s.push_str(", "); } else { first = false; }
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value(val, depth-1));
+            }
+            s.push('}');
+            s
         }
         Value::Obj(m) => {
-            let mut parts = Vec::new();
-            for (k, val) in m.borrow().iter() { parts.push(format!("{}: {}", k, fmt_value(val, depth-1))); }
-            format!("{{{}}}", parts.join(", "))
+            let mut s = String::new();
+            s.push('{');
+            let mut first = true;
+            for (k, val) in m.borrow().iter() {
+                if !first { s.push_str(", "); } else { first = false; }
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value(val, depth-1));
+            }
+            s.push('}');
+            s
         }
         Value::Buffer(b) => {
             format!("<buffer len={}>", b.borrow().len())
@@ -1101,9 +1525,18 @@ pub fn fmt_value(v: &Value, depth: usize) -> String {
         Value::Lambda(_) => "<lambda>".to_string(),
         Value::Object(rc) => {
             let b = rc.borrow();
-            let mut parts = Vec::new();
-            for (k, val) in b.fields.iter() { parts.push(format!("{}: {}", k, fmt_value(val, depth-1))); }
-            format!("{}{{{}}}", b.class, parts.join(", "))
+            let mut s = String::new();
+            s.push_str(&b.class);
+            s.push('{');
+            let mut first = true;
+            for (k, val) in b.fields.iter() {
+                if !first { s.push_str(", "); } else { first = false; }
+                s.push_str(k);
+                s.push_str(": ");
+                s.push_str(&fmt_value(val, depth-1));
+            }
+            s.push('}');
+            s
         }
     }
 }
