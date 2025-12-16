@@ -31,10 +31,12 @@ pub struct Lambda {
 #[derive(Debug)]
 pub struct Runtime {
     pub scopes: Vec<HashMap<String, Value>>,
+    pub func_index: HashMap<String, usize>,
+    pub class_index: HashMap<String, usize>,
 }
 
 impl Runtime {
-    pub fn new() -> Self { Self { scopes: vec![HashMap::new()] } }
+    pub fn new() -> Self { Self { scopes: vec![HashMap::new()], func_index: HashMap::new(), class_index: HashMap::new() } }
     pub fn get(&self, name: &str) -> Option<Value> {
         for i in (0..self.scopes.len()).rev() { if let Some(v) = self.scopes[i].get(name) { return Some(v.clone()); } }
         None
