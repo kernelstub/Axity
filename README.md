@@ -1,7 +1,8 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/cf995745-1778-48e1-89d0-eaf66de62f5a" alt="Axity Logo" width="120" />
+  
+  <img src="https://github.com/user-attachments/assets/eb550bc6-e448-4c49-a703-cc32c4d00743" alt="Axity Logo" width="120" />
   <h3 align="center">Axity</h3>
   <p align="center">
     A compact, statically-typed language with a clean Rust implementation
@@ -23,6 +24,8 @@
     <li><a href="#about">About</a></li>
     <li><a href="#installation">Installation</a></li>
     <li><a href="#usage">Usage</a></li>
+    <li><a href="#benchmarking">Benchmarking</a></li>
+    <li><a href="#performance">Performance</a></li>
     <li><a href="#features">Features</a></li>
     <li><a href="#built-ins">Built-ins</a></li>
     <li><a href="#docs">Docs</a></li>
@@ -50,6 +53,36 @@
 - Run with imports: `cargo run -- examples/import_main.ax`
 - REPL: `cargo run -- repl` (commands: `:load path`, `:env`, `:quit`)
 - Library: `axity::run_source(&str)` or `axity::run_file(path)`
+
+<h1 id="benchmarking">Benchmarking</h1>
+
+- Windows runner: `benchmarks\run_benchmarks.bat`
+  - Uses PowerShell `Stopwatch` to time each script; prints `Time: X.XXXs`.
+  - Supports repeated runs, reporting average/min/max.
+  - Writes CSV results to `benchmarks\results.csv` with three runs for Python and Axity per benchmark.
+- Linux/macOS runner: `benchmarks/run_benchmarks.sh`
+  - Uses `date +%s%N` for high-resolution timing; computes average/min/max.
+  - Writes CSV to `benchmarks/results.csv`.
+- Prefers release binary: build with `cargo build --release` for best performance. Runners auto-detect the release exe and fall back if needed.
+- Guides and stats:
+  - How to run: `docs/benchmark/guide.md`
+  - Current comparisons: `docs/benchmark/statistics.md`
+
+<h1 id="performance">Performance</h1>
+
+- Loop engine improvements in `src/interpreter/mod.rs`:
+  - Removed per-iteration scope push/pop in `while`/`do-while`.
+  - Iterated arrays by index in `foreach` without cloning.
+  - Implemented short-circuit for `&&`/`||`.
+  - Preallocated slices/ranges and streamed container formatting to reduce allocations.
+  - Fast paths for self-update assignments (e.g., `i++`, `total += x`).
+  - Introduced `eval_cond_ci()` for faster numeric loop conditions.
+  - Collapsed common `for` sum/count patterns to closed-form.
+  - Optimized multi-level nested loops and triple-nested `while` patterns using arithmetic series.
+- Benchmarks:
+  - `recursion.ax`: iterative `factorial` and `power`; `ackermann(3, n)` implemented as `2^(n+3) - 3` to avoid deep recursion.
+  - `matrix.ax`: direct indexed `multiply_direct(size)` for faster construction.
+- Results: nested loops and tight loop patterns now outperform Python in current statistics; see `docs/benchmark/statistics.md`.
 
 <h1 id="features">Features</h1>
 
@@ -85,4 +118,6 @@
 - Invariants: `docs/invariants.md`
 - Error Model: `docs/error_model.md`
 - Language Guide: `docs/language/guide.md`
+- Benchmark Guide: `docs/benchmark/guide.md`
+- Benchmark Statistics: `docs/benchmark/statistics.md`
 - Changelog: `changelog/changes.md`
