@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 use std::env;
 use axity::run_file;
 use axity::{run_source_with_runtime};
