@@ -308,6 +308,12 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
                 if args.len() != 2 { return Err(AxityError::ty("write_* expects (path, content)", span.clone())); }
                 if check_expr(&args[0], vars, funcs, classes)? != Type::String || check_expr(&args[1], vars, funcs, classes)? != Type::String { return Err(AxityError::ty("write_* arg types", span.clone())); }
                 Ok(Type::Int)
+            } else if name == "input" {
+                if args.len() > 1 { return Err(AxityError::ty("input expects zero or one argument", span.clone())); }
+                if let Some(a0) = args.get(0) {
+                    if check_expr(a0, vars, funcs, classes)? != Type::String { return Err(AxityError::ty("prompt must be string", span.clone())); }
+                }
+                Ok(Type::Any)
             } else if name == "json_get" || name == "toml_get" || name == "env_get" {
                 if args.len() != 2 { return Err(AxityError::ty("get expects (content, key)", span.clone())); }
                 if check_expr(&args[0], vars, funcs, classes)? != Type::String || check_expr(&args[1], vars, funcs, classes)? != Type::String { return Err(AxityError::ty("get arg types", span.clone())); }
@@ -353,6 +359,18 @@ fn check_expr(e: &Expr, vars: &Vec<HashMap<String, Type>>, funcs: &HashMap<Strin
                 let t0 = check_expr(&args[0], vars, funcs, classes)?; let t1 = check_expr(&args[1], vars, funcs, classes)?;
                 if t0 != Type::String || t1 != Type::String { return Err(AxityError::ty("index_of arg types", span.clone())); }
                 Ok(Type::Int)
+            } else if name == "matrix_mul" {
+                if args.len() != 2 { return Err(AxityError::ty("matrix_mul expects (A, B)", span.clone())); }
+                let ta = check_expr(&args[0], vars, funcs, classes)?;
+                let tb = check_expr(&args[1], vars, funcs, classes)?;
+                let is_mat = |t: &Type| -> bool {
+                    if let Type::Array(inner) = t {
+                        if let Type::Array(_inside) = &**inner { return true; }
+                    }
+                    false
+                };
+                if !is_mat(&ta) || !is_mat(&tb) { return Err(AxityError::ty("matrix_mul expects arrays of arrays", span.clone())); }
+                Ok(Type::Array(Box::new(Type::Array(Box::new(Type::Any)))))
             } else if name == "to_int" {
                 if args.len() != 1 { return Err(AxityError::ty("to_int expects string", span.clone())); }
                 let t0 = check_expr(&args[0], vars, funcs, classes)?;

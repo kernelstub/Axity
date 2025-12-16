@@ -40,7 +40,7 @@
 11. [Strings](#strings)
 12. [Buffers](#buffers)
 13. [Math Functions](#math-functions)
-14. [IO: Files, JSON, TOML, ENV](#io-files-json-toml-env)
+14. [IO: Files, JSON, TOML, ENV, Input](#io-files-json-toml-env)
 15. [Imports](#imports)
 16. [REPL and Debug](#repl-and-debug)
 17. [Printing](#printing)
@@ -542,6 +542,23 @@ let e = read_env(".env");
 env_set(e, "TOKEN", "abc123");
 write_env(".env", e);
 ```
+
+### Input
+
+```axity
+// Prompts stream immediately; input returns a string (type-checked as any)
+print("Welcome to input demo");
+let name: any = input("Name: ");
+print("Hello, " + name);
+
+// Convert to int when needed
+let age: int = to_int(input("Age: "));
+print("You are " + to_string(age) + " years old");
+```
+
+Notes:
+- `input()` reads a line from stdin; `input("Prompt: ")` writes the prompt and then reads.
+- Output from `print` and prompts streams to stdout in real time during execution.
 
 ---
 

@@ -29,8 +29,8 @@ pub fn execute(p: &Program, rt: &mut Runtime, out: &mut String) -> Result<(), Ax
     }
     if rt.func_index.contains_key("main") {
         let rv = call_func("main", &[], p, rt, out)?;
-        out.push_str(&fmt_value(&rv, 2));
-        out.push('\n');
+        rt.emit(out, &fmt_value(&rv, 2));
+        rt.emit(out, "\n");
     }
     Ok(())
 }
@@ -186,8 +186,8 @@ fn exec_stmt(p: &Program, s: &Stmt, rt: &mut Runtime, out: &mut String) -> Resul
                 Value::Str(s) => interpolate_str(&s, rt),
                 _ => fmt_value(&v, 2),
             };
-            out.push_str(&s);
-            out.push('\n');
+            rt.emit(out, &s);
+            rt.emit(out, "\n");
             Ok(Control::Next)
         }
         Stmt::Expr(e) => { let _ = eval_expr(p, e, rt, out)?; Ok(Control::Next) }
@@ -731,7 +731,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
         Expr::ArrayLit(elems, _) => {
             let mut v = Vec::new();
             for el in elems { v.push(eval_expr(p, el, rt, out)?); }
-            Ok(Value::Array(Rc::new(RefCell::new(v))))
+            Ok(rt.new_array(v))
         }
         Expr::ObjLit(pairs, _) => {
             let mut m = std::collections::HashMap::new();
@@ -739,7 +739,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let v = eval_expr(p, vexpr, rt, out)?;
                 m.insert(k.clone(), v);
             }
-            Ok(Value::Obj(Rc::new(RefCell::new(m))))
+            Ok(rt.new_obj_map(m))
         }
         Expr::Bool(b, _) => Ok(Value::Bool(*b)),
         Expr::Binary{ op, left, right, .. } => {
@@ -946,31 +946,31 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                             let dv = match f.ty {
                                 crate::types::Type::Int => Value::Int(0),
                                 crate::types::Type::String => Value::Str(String::new()),
-                                crate::types::Type::Array(_) => Value::Array(Rc::new(RefCell::new(Vec::new()))),
-                                crate::types::Type::Class(_) => Value::Object(Rc::new(RefCell::new(Object{ class: String::new(), fields: HashMap::new() }))),
+                                crate::types::Type::Array(_) => rt.new_array(Vec::new()),
+                                crate::types::Type::Class(_) => rt.new_object(String::new(), HashMap::new()),
                                 crate::types::Type::Bool => Value::Bool(false),
-                                crate::types::Type::Map(_) => Value::Map(Rc::new(RefCell::new(HashMap::new()))),
+                                crate::types::Type::Map(_) => rt.new_map(),
                                 crate::types::Type::Flt => Value::Flt(0),
-                                crate::types::Type::Obj => Value::Obj(Rc::new(RefCell::new(HashMap::new()))),
+                                crate::types::Type::Obj => rt.new_obj_map(HashMap::new()),
                                 crate::types::Type::Fn(_, _) => Value::Int(0),
-                                crate::types::Type::Buffer => Value::Buffer(Rc::new(RefCell::new(Vec::new()))),
+                                crate::types::Type::Buffer => rt.new_buffer(Vec::new()),
                                 crate::types::Type::Any => Value::Int(0),
                             };
                             fields.insert(f.name.clone(), dv);
                         }
-                        let obj = Rc::new(RefCell::new(Object{ class: name.clone(), fields }));
+                        let obj_val = rt.new_object(name.clone(), fields);
                         // call init if present
                         if c.methods.iter().any(|m| m.name == "init") {
                             let mut ev_args = Vec::new();
-                            ev_args.push(Value::Object(obj.clone()));
+                            ev_args.push(obj_val.clone());
                             for a in args { ev_args.push(eval_expr(p, a, rt, out)?); }
                             let _ = call_method("init", &ev_args, p, rt, out)?;
                         }
-                        return Ok(Value::Object(obj));
+                        return Ok(obj_val);
                     }
                 }
             }
-            Ok(Value::Object(Rc::new(RefCell::new(Object{ class: name.clone(), fields }))))
+            Ok(rt.new_object(name.clone(), fields))
         }
         Expr::Member{ object, field, .. } => {
             let ov = eval_expr(p, object, rt, out)?;
@@ -1048,7 +1048,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                         let end = st.saturating_add(ln).min(vb.len());
                         let mut outv = Vec::with_capacity(end.saturating_sub(st));
                         for i in st..end { outv.push(vb[i].clone()); }
-                        Ok(Value::Array(Rc::new(RefCell::new(outv))))
+                        Ok(rt.new_array(outv))
                     }
                     _ => Err(AxityError::rt("slice expects array"))
                 }
@@ -1060,11 +1060,11 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let mut v = Vec::with_capacity((en - st).abs() as usize);
                 let mut i = st;
                 while (step > 0 && i < en) || (step < 0 && i > en) { v.push(Value::Int(i)); i += step; }
-                Ok(Value::Array(Rc::new(RefCell::new(v))))
+                Ok(rt.new_array(v))
             } else if name == "buffer_new" {
                 if args.len() != 1 { return Err(AxityError::rt("buffer_new expects size")); }
                 let sz = match eval_expr(p, &args[0], rt, out)? { Value::Int(i) => i as usize, _ => return Err(AxityError::rt("size must be int")) };
-                Ok(Value::Buffer(Rc::new(RefCell::new(vec![0u8; sz]))))
+                Ok(rt.new_buffer(vec![0u8; sz]))
             } else if name == "buffer_len" {
                 if args.len() != 1 { return Err(AxityError::rt("buffer_len expects buffer")); }
                 match eval_expr(p, &args[0], rt, out)? {
@@ -1108,7 +1108,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
             } else if name == "buffer_from_string" {
                 if args.len() != 1 { return Err(AxityError::rt("buffer_from_string expects string")); }
                 match eval_expr(p, &args[0], rt, out)? {
-                    Value::Str(s) => Ok(Value::Buffer(Rc::new(RefCell::new(s.into_bytes())))),
+                    Value::Str(s) => Ok(rt.new_buffer(s.into_bytes())),
                     _ => Err(AxityError::rt("arg must be string"))
                 }
             } else if name == "buffer_to_string" {
@@ -1154,7 +1154,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let sep = match eval_expr(p, &args[1], rt, out)? { Value::Str(v) => v, _ => return Err(AxityError::rt("sep must be string")) };
                 let mut v = Vec::new();
                 for part in s.split(&sep) { v.push(Value::Str(part.to_string())); }
-                Ok(Value::Array(Rc::new(RefCell::new(v))))
+                Ok(rt.new_array(v))
             } else if name == "push" {
                 if args.len() != 2 { return Err(AxityError::rt("push expects array and value")); }
                 let arr = eval_expr(p, &args[0], rt, out)?;
@@ -1182,10 +1182,10 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 }
             } else if name == "map_new_int" {
                 if args.len() != 0 { return Err(AxityError::rt("map_new_int expects no args")); }
-                Ok(Value::Map(Rc::new(RefCell::new(std::collections::HashMap::new()))))
+                Ok(rt.new_map())
             } else if name == "map_new_string" {
                 if args.len() != 0 { return Err(AxityError::rt("map_new_string expects no args")); }
-                Ok(Value::Map(Rc::new(RefCell::new(std::collections::HashMap::new()))))
+                Ok(rt.new_map())
             } else if name == "map_set" {
                 let m = eval_expr(p, &args[0], rt, out)?;
                 let k = eval_expr(p, &args[1], rt, out)?;
@@ -1217,7 +1217,7 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                     Value::Map(mm) => {
                         let mut v = Vec::new();
                         for k in mm.borrow().keys() { v.push(Value::Str(k.clone())); }
-                        Ok(Value::Array(Rc::new(RefCell::new(v))))
+                        Ok(rt.new_array(v))
                     }
                     _ => Err(AxityError::rt("first arg must be map"))
                 }
@@ -1339,6 +1339,16 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 let pth = match eval_expr(p, &args[0], rt, out)? { Value::Str(s) => s, _ => return Err(AxityError::rt("path must be string")) };
                 let content = match eval_expr(p, &args[1], rt, out)? { Value::Str(s) => s, _ => return Err(AxityError::rt("content must be string")) };
                 match std::fs::write(&pth, content) { Ok(_) => Ok(Value::Int(1)), Err(e) => Err(AxityError::rt(&format!("write error: {}", e))) }
+            } else if name == "input" {
+                if args.len() > 1 { return Err(AxityError::rt("input expects zero or one argument")); }
+                if let Some(a0) = args.get(0) {
+                    let prompt = match eval_expr(p, a0, rt, out)? { Value::Str(s) => s, _ => return Err(AxityError::rt("prompt must be string")) };
+                    rt.emit(out, &prompt);
+                }
+                let mut s = String::new();
+                let _ = std::io::stdin().read_line(&mut s);
+                if s.ends_with('\n') { s.pop(); if s.ends_with('\r') { s.pop(); } }
+                Ok(Value::Str(s))
             } else if name == "env_get" {
                 if args.len() != 2 { return Err(AxityError::rt("env_get expects (file_content, key)")); }
                 let content = match eval_expr(p, &args[0], rt, out)? { Value::Str(s) => s, _ => return Err(AxityError::rt("content must be string")) };
@@ -1385,6 +1395,85 @@ fn eval_expr(p: &Program, e: &Expr, rt: &mut Runtime, out: &mut String) -> Resul
                 if args.len() != 1 { return Err(AxityError::rt("to_string expects one argument")); }
                 let i = eval_expr(p, &args[0], rt, out)?;
                 match i { Value::Int(ii) => Ok(Value::Str(ii.to_string())), _ => Err(AxityError::rt("to_string expects int")) }
+            } else if name == "matrix_mul" {
+                if args.len() != 2 { return Err(AxityError::rt("matrix_mul expects (A, B)")); }
+                let a = eval_expr(p, &args[0], rt, out)?;
+                let b = eval_expr(p, &args[1], rt, out)?;
+                let (arows, brows) = match (a, b) {
+                    (Value::Array(ar), Value::Array(br)) => (ar, br),
+                    _ => return Err(AxityError::rt("matrix_mul expects arrays of arrays")),
+                };
+                let ab = arows.borrow();
+                let bb = brows.borrow();
+                let m = ab.len();
+                if m == 0 { return Ok(rt.new_array(Vec::new())); }
+                let n = match &ab[0] {
+                    Value::Array(r) => r.borrow().len(),
+                    _ => return Err(AxityError::rt("matrix rows must be arrays")),
+                };
+                for r in &*ab {
+                    let rl = match r { Value::Array(rc) => rc.borrow().len(), _ => return Err(AxityError::rt("matrix rows must be arrays")) };
+                    if rl != n { return Err(AxityError::rt("matrix A rows have inconsistent lengths")); }
+                }
+                let bn = bb.len();
+                if bn != n { return Err(AxityError::rt("matrix dimension mismatch: cols(A) != rows(B)")); }
+                let pcols = match &bb[0] {
+                    Value::Array(r) => r.borrow().len(),
+                    _ => return Err(AxityError::rt("matrix rows must be arrays")),
+                };
+                for r in &*bb {
+                    let rl = match r { Value::Array(rc) => rc.borrow().len(), _ => return Err(AxityError::rt("matrix rows must be arrays")) };
+                    if rl != pcols { return Err(AxityError::rt("matrix B rows have inconsistent lengths")); }
+                }
+                let mut use_flt = false;
+                for r in &*ab {
+                    if let Value::Array(rc) = r {
+                        for v in rc.borrow().iter() {
+                            if matches!(v, Value::Flt(_)) { use_flt = true; break; }
+                        }
+                    }
+                    if use_flt { break; }
+                }
+                if !use_flt {
+                    for r in &*bb {
+                        if let Value::Array(rc) = r {
+                            for v in rc.borrow().iter() {
+                                if matches!(v, Value::Flt(_)) { use_flt = true; break; }
+                            }
+                        }
+                        if use_flt { break; }
+                    }
+                }
+                let mut out_rows: Vec<Value> = Vec::with_capacity(m);
+                for i in 0..m {
+                    let ai = match &ab[i] { Value::Array(rc) => rc.borrow(), _ => return Err(AxityError::rt("matrix rows must be arrays")) };
+                    let mut row_vals: Vec<Value> = Vec::with_capacity(pcols);
+                    for j in 0..pcols {
+                        if use_flt {
+                            let mut acc: i128 = 0;
+                            for k in 0..n {
+                                let lv = ai[k].clone();
+                                let rv = match &bb[k] { Value::Array(rc) => rc.borrow()[j].clone(), _ => return Err(AxityError::rt("matrix rows must be arrays")) };
+                                let lf: i64 = match lv { Value::Flt(f) => f, Value::Int(ii) => ii * SCALE, _ => return Err(AxityError::rt("matrix elements must be int or flt")) };
+                                let rf: i64 = match rv { Value::Flt(f) => f, Value::Int(ii) => ii * SCALE, _ => return Err(AxityError::rt("matrix elements must be int or flt")) };
+                                acc += ((lf as i128) * (rf as i128)) / (SCALE as i128);
+                            }
+                            row_vals.push(Value::Flt(acc as i64));
+                        } else {
+                            let mut acc: i128 = 0;
+                            for k in 0..n {
+                                let lv = ai[k].clone();
+                                let rv = match &bb[k] { Value::Array(rc) => rc.borrow()[j].clone(), _ => return Err(AxityError::rt("matrix rows must be arrays")) };
+                                let li: i64 = match lv { Value::Int(ii) => ii, _ => return Err(AxityError::rt("matrix elements must be int")) };
+                                let ri: i64 = match rv { Value::Int(ii) => ii, _ => return Err(AxityError::rt("matrix elements must be int")) };
+                                acc += (li as i128) * (ri as i128);
+                            }
+                            row_vals.push(Value::Int(acc as i64));
+                        }
+                    }
+                    out_rows.push(rt.new_array(row_vals));
+                }
+                Ok(rt.new_array(out_rows))
             } else if name == "sin" || name == "cos" || name == "tan" {
                 if args.len() != 1 { return Err(AxityError::rt("trig expects one argument (radians)")); }
                 let x = eval_expr(p, &args[0], rt, out)?;

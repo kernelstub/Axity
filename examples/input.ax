@@ -1,0 +1,14 @@
+print("Welcome to input demo");
+
+let name: any = input("Name: ");
+print("Hello, " + name);
+
+let age_s: str = input("Age: ");
+let age: int = to_int(age_s);
+print("You are " + to_string(age) + " years old");
+
+let city: any = input("City: ");
+print("From: " + city);
+
+let reused: any = name;
+print("Reusing name: " + reused);

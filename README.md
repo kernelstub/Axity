@@ -44,6 +44,8 @@
 
 - Requires Rust stable and Cargo
 - Build: `cargo build`
+- Release build: `cargo build --release`
+- Scripts: `scripts/build_axity.bat` (Windows) and `scripts/build_axity.sh` (Unix) build release binaries
 - Optional: `cargo fmt`, `cargo clippy`
 
 <h1 id="usage">Usage</h1>
@@ -54,6 +56,14 @@
 - Run with imports: `cargo run -- examples/import_main.ax`
 - REPL: `cargo run -- repl` (commands: `:load path`, `:env`, `:quit`)
 - Library: `axity::run_source(&str)` or `axity::run_file(path)`
+- Initialize a project:
+  - Windows: `.\target\release\axity.exe init MyProject`
+  - Unix: `./target/release/axity init MyProject`
+  - Creates `src/`, `src/includes/`, `src/main.ax`, `build/`, `.axity`
+
+- Note: For best performance, build and run the release binary. `cargo run` uses the debug build, which is significantly slower.
+  - Indicative timings from internal benchmarks show debug around ~0.3s vs release around ~0.009s on sample programs
+  - See `docs/benchmark/guide.md` and `docs/benchmark/statistics.md` for details
 
 <h1 id="testing">Testing</h1>
 
@@ -114,12 +124,14 @@
 - Arrays: `len(xs)`, `push(xs, v)`, `pop(xs)`, `set(xs, i, v)`, `xs[i]`
 - Strings: `strlen(s)`, `substr(s, start, len)`, `index_of(s, sub)`, `to_int(s)`, `to_string(i)`
 - Math: `sin(x)`, `cos(x)`, `tan(x)` where `x` is radians (`flt` or `int`)
+- Matrix: `matrix_mul(A, B)` multiplies arrays-of-arrays; supports `int` and `flt`
 - Files: `read_file(path)`, `write_file(path, content)`, `exists(path)`, `mkdir(path)`
 - JSON: `read_json(path)`, `write_json(path, content)`, `json_get(json, key)`, `json_set(json, key, value)`
 - TOML: `read_toml(path)`, `write_toml(path, content)`, `toml_get(toml, "key" | "section.key")`, `toml_set(toml, "key" | "section.key", value)`
 - ENV: `read_env(path)`, `write_env(path, content)`, `env_get(env, key)`, `env_set(env, key, value)`
 - Maps: `map_new_int()`, `map_new_string()`, `map_set(m, k, v)`, `map_get(m, k)`, `map_has(m, k)`, `map_keys(m)`
 - Buffers: `buffer_new(size)`, `buffer_len(buf)`, `buffer_get(buf, idx)`, `buffer_set(buf, idx, byte)`, `buffer_push(buf, byte)`, `buffer_from_string(s)`, `buffer_to_string(buf)`
+- Input: `input()` reads stdin; `input("Prompt: ")` writes the prompt and reads. Returns string at runtime; type-checks as `any`.
 
 <h1 id="docs">Docs</h1>
 

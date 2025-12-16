@@ -6,7 +6,35 @@ use axity::{run_source_with_runtime};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 { eprintln!("usage: axity [--dump-tokens] [--dump-ast] <file.ax>"); std::process::exit(1); }
+    if args.len() < 2 { eprintln!("usage: axity [--dump-tokens] [--dump-ast] <file.ax> | init <ProjectName>"); std::process::exit(1); }
+    if args.len() >= 3 && args[1] == "init" {
+        let name = args[2].clone();
+        let base = std::path::PathBuf::from(&name);
+        if base.exists() {
+            eprintln!("init error: target '{}' already exists", name);
+            std::process::exit(1);
+        }
+        let src = base.join("src");
+        let includes = src.join("includes");
+        let build = base.join("build");
+        let axity_meta = base.join(".axity");
+        if let Err(e) = std::fs::create_dir_all(&includes) { eprintln!("init error: {}", e); std::process::exit(1); }
+        if let Err(e) = std::fs::create_dir_all(&build) { eprintln!("init error: {}", e); std::process::exit(1); }
+        if let Err(e) = std::fs::write(axity_meta, "version=1\n") { eprintln!("init error: {}", e); std::process::exit(1); }
+        let main_ax = src.join("main.ax");
+        let tpl = format!(
+            "print(\"Welcome to {} project\");\nlet name: any = input(\"Name: \");\nprint(\"Hello, \" + name);\n",
+            name
+        );
+        if let Err(e) = std::fs::write(&main_ax, tpl) { eprintln!("init error: {}", e); std::process::exit(1); }
+        println!("Initialized Axity project at '{}'", name);
+        println!("  - src/");
+        println!("  - src/includes/");
+        println!("  - src/main.ax");
+        println!("  - build/");
+        println!("  - .axity");
+        return;
+    }
     let mut dump_tokens = false;
     let mut dump_ast = false;
     let mut file = None;
