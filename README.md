@@ -24,6 +24,7 @@
     <li><a href="#about">About</a></li>
     <li><a href="#installation">Installation</a></li>
     <li><a href="#usage">Usage</a></li>
+    <li><a href="#testing">Testing</a></li>
     <li><a href="#benchmarking">Benchmarking</a></li>
     <li><a href="#performance">Performance</a></li>
     <li><a href="#features">Features</a></li>
@@ -53,6 +54,15 @@
 - Run with imports: `cargo run -- examples/import_main.ax`
 - REPL: `cargo run -- repl` (commands: `:load path`, `:env`, `:quit`)
 - Library: `axity::run_source(&str)` or `axity::run_file(path)`
+
+<h1 id="testing">Testing</h1>
+
+- Scripts:
+  - Windows: `./scripts/run_tests.ps1` (supports `-Release` and `-Verbose`)
+  - Linux/macOS: `chmod +x scripts/run_tests.sh && ./scripts/run_tests.sh`
+- Examples:
+  - Windows release tests: `./scripts/run_tests.ps1 -Release`
+  - Verbose: `./scripts/run_tests.ps1 -Verbose`
 
 <h1 id="benchmarking">Benchmarking</h1>
 

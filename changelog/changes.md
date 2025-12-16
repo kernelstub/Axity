@@ -10,6 +10,8 @@
 - Documentation
   - Created `docs/benchmark/guide.md` with step-by-step instructions for running benchmarks on Windows and Linux/macOS, explaining timing outputs and CSV results.
   - Added `docs/benchmark/statistics.md` presenting comparative results in tables (environment, per-benchmark timings, ratios, and category highlights). Updated multiple times as optimizations landed; nested loops now faster than Python in current stats.
+- Scripts
+  - Added `scripts/` folder with `scripts/run_tests.sh` (Linux/macOS) and `scripts/run_tests.ps1` (Windows) for running Rust tests. Supports `-Release` and `-Verbose` flags on Windows.
 - Recursion and Benchmarks
   - Rewrote `benchmarks/axity/recursion.ax` to avoid deep recursion and stack issues:
     - Implemented `factorial(n)` iteratively.
