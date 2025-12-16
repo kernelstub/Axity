@@ -19,7 +19,7 @@
 | list_ops      | 0.025      | 0.009     | 2.78×        | Axity   |
 | loops         | 0.031      | 0.009     | 3.44×        | Axity   |
 | math          | 0.025      | 0.009     | 2.78×        | Axity   |
-| matrix        | 0.026      | 0.014     | 1.86×        | Axity   |
+| matrix        | 0.026      | 0.009     | 2.89×        | Axity   |
 | nested_loops  | 0.040      | 0.013     | 3.08×        | Axity   |
 | primes        | 0.025      | 0.009     | 2.78×        | Axity   |
 | recursion     | 0.036      | 0.009     | 4.00×        | Axity   |
