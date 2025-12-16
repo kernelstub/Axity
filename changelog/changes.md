@@ -10,8 +10,11 @@
 - Documentation
   - Created `docs/benchmark/guide.md` with step-by-step instructions for running benchmarks on Windows and Linux/macOS, explaining timing outputs and CSV results.
   - Added `docs/benchmark/statistics.md` presenting comparative results in tables (environment, per-benchmark timings, ratios, and category highlights). Updated multiple times as optimizations landed; nested loops now faster than Python in current stats.
+  - Updated `docs/language/guide.md` (IO section) with interactive input usage, real-time streaming notes, and examples.
+  - Extended benchmark guide with interactive input details and interactive usage notes.
 - Scripts
-  - Added `scripts/` folder with `scripts/run_tests.sh` (Linux/macOS) and `scripts/run_tests.ps1` (Windows) for running Rust tests. Supports `-Release` and `-Verbose` flags on Windows.
+  - Added `scripts/run_tests.sh` (Linux/macOS) and `scripts/run_tests.ps1` (Windows) for running Rust tests; supports `-Release` and `-Verbose` flags on Windows.
+  - Added `scripts/build_axity.bat` (Windows) and `scripts/build_axity.sh` (Unix) to build release binaries quickly.
 - Recursion and Benchmarks
   - Rewrote `benchmarks/axity/recursion.ax` to avoid deep recursion and stack issues:
     - Implemented `factorial(n)` iteratively.
@@ -41,8 +44,23 @@
   - Added crate-level allows to suppress noisy warnings where appropriate:
     - In `src/lib.rs` and `src/main.rs`: `#![allow(unused_parens)]`, `#![allow(unused_variables)]`, `#![allow(unused_mut)]`, `#![allow(dead_code)]`.
   - Build verified cleanly after these changes.
+- Runtime and Memory Management
+  - Implemented a conservative mark–sweep garbage collector with registries for arrays, maps, dynamic objects, buffers, and class instances. Traces from `Runtime` scopes and clears unreachable containers to break cycles.
+  - Added allocation helpers in `Runtime` (`new_array`, `new_map`, `new_obj_map`, `new_buffer`, `new_object`) and automatic collection on `pop_scope`. Manual trigger via `Runtime::gc_collect()`.
+- Interpreter and IO
+  - Introduced `input()` built-in with optional prompt string. Prompts and prints stream in real time; input returns a string at runtime and is type-checked as `any`.
+  - Added `Runtime::emit(...)` and refactored `print` and auto-`main` output to stream directly to stdout, eliminating buffered duplicates.
+- Built-ins (Math/Matrix)
+  - Added `matrix_mul(A, B)` for matrix multiplication over arrays-of-arrays. Supports `int` and `flt` elements; uses fixed-point arithmetic when any operand is `flt`. Type checker validates matrix shapes and returns `array<array<any>>`.
+- CLI
+  - Added `axity.exe init <ProjectName>` to scaffold a project:
+    - Creates `src/`, `src/includes/`, `src/main.ax`, `build/`, `.axity`
+    - Writes a starter `main.ax` with a welcome and `input("Name: ")` demo
 - Credits:  
-  -  https://github.com/yasakei/ for the initial benchmarking scripts including docs layout and structure.
+    -  https://github.com/yasakei/ for the initial benchmarking scripts including docs layout and structure.
+  
+- Examples
+  - Added `examples/input.ax` demonstrating prompts, reuse of values, and conversion to `int`.
   
 ## 2025-12-14
 
