@@ -33,7 +33,7 @@
 |--------------|------------------------------------|------------------|---------|
 | Strings      | string_ops, strings                | ~2.34×           | Axity   |
 | Collections  | list_ops, sorting                  | ~2.78×           | Axity   |
-| Numeric      | math, matrix, primes               | ~2.47×           | Axity   |
+| Numeric      | math, matrix, primes               | ~2.82×           | Axity   |
 | Recursion    | recursion, ackermann, fibonacci    | ~54.83×          | Axity   |
 | Control Flow | loops, nested_loops                | ~3.26×           | Axity   |
 
