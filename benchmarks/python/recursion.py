@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-# Recursive algorithms benchmark in Python
-
 def factorial(n):
     if n <= 1:
         return 1
@@ -21,7 +19,6 @@ def power(base, exp):
         return base
     return base * power(base, exp - 1)
 
-# Run recursive benchmarks
 fact15 = factorial(15)
 ack = ackermann(3, 6)
 pow_val = power(2, 10)

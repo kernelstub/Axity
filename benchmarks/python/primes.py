@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-# Prime number generation benchmark in Python
-
 def is_prime(n):
     if n < 2:
         return False
@@ -23,6 +21,5 @@ def generate_primes(limit):
             primes.append(num)
     return primes
 
-# Generate primes up to 1000 (reduced from 5000 to match Neutron)
 result = generate_primes(1000)
 print(f"Found {len(result)} primes")

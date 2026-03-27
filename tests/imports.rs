@@ -6,4 +6,3 @@ fn import_functions() -> Result<(), AxityError> {
     assert_eq!(out, "5\n");
     Ok(())
 }
-

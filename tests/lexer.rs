@@ -7,4 +7,3 @@ fn lex_basic() -> Result<(), AxityError> {
     assert!(toks.len() > 0);
     Ok(())
 }
-

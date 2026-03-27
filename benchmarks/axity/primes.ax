@@ -28,7 +28,6 @@ fn is_prime(n: int) -> bool {
 
 fn count_primes(limit: int) -> int {
     let flags: array<int> = [0];
-    // initialize flags with zeros up to limit
     for let i: int = 0; i < limit; i++ {
         push(flags, 0);
     }

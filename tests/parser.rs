@@ -8,4 +8,3 @@ fn parse_function() -> Result<(), AxityError> {
     assert_eq!(ast.items.len(), 1);
     Ok(())
 }
-

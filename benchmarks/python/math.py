@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-# Math operations benchmark in Python
-
 def power(base, exp):
     result = 1
     for _ in range(exp):
@@ -13,11 +11,11 @@ def sqrt(n):
         return 0
     if n == 0 or n == 1:
         return n
-    
+
     guess = n / 2
     epsilon = 0.00001
     iterations = 0
-    
+
     while iterations < 100:
         new_guess = (guess + n / guess) / 2
         if abs(guess - new_guess) < epsilon:
@@ -31,7 +29,6 @@ def gcd(a, b):
         a, b = b, a % b
     return a
 
-# Run math operations
 pow1 = power(2, 20)
 pow2 = power(3, 15)
 sq1 = sqrt(144)

@@ -1,7 +1,7 @@
+use crate::runtime::{Object, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use crate::runtime::{Value, Object};
 
 #[derive(Debug)]
 pub struct Gc {
@@ -31,12 +31,18 @@ impl Gc {
         self.bump();
         rc
     }
-    pub fn register_map(&mut self, rc: Rc<RefCell<HashMap<String, Value>>>) -> Rc<RefCell<HashMap<String, Value>>> {
+    pub fn register_map(
+        &mut self,
+        rc: Rc<RefCell<HashMap<String, Value>>>,
+    ) -> Rc<RefCell<HashMap<String, Value>>> {
         self.maps.push(Rc::downgrade(&rc));
         self.bump();
         rc
     }
-    pub fn register_obj(&mut self, rc: Rc<RefCell<HashMap<String, Value>>>) -> Rc<RefCell<HashMap<String, Value>>> {
+    pub fn register_obj(
+        &mut self,
+        rc: Rc<RefCell<HashMap<String, Value>>>,
+    ) -> Rc<RefCell<HashMap<String, Value>>> {
         self.objs.push(Rc::downgrade(&rc));
         self.bump();
         rc
@@ -51,8 +57,12 @@ impl Gc {
         self.bump();
         rc
     }
-    fn bump(&mut self) { self.alloc_count = self.alloc_count.saturating_add(1); }
-    pub fn should_collect(&self) -> bool { self.alloc_count >= self.threshold }
+    fn bump(&mut self) {
+        self.alloc_count = self.alloc_count.saturating_add(1);
+    }
+    pub fn should_collect(&self) -> bool {
+        self.alloc_count >= self.threshold
+    }
     pub fn collect(&mut self, scopes: &[HashMap<String, Value>]) {
         let mut marks = Marks::new();
         for scope in scopes {

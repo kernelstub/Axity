@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-# Loop operations benchmark in Python
-
 def sum_with_for_loop(n):
     total = 0
     for i in range(n):
@@ -24,7 +22,6 @@ def nested_loops(depth, size):
                 count += 1
     return count
 
-# Perform loop operations
 for_result = sum_with_for_loop(100000)
 while_result = sum_with_while_loop(100000)
 nested_result = nested_loops(10, 50)

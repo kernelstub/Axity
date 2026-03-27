@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Deep recursion benchmark - Factorial and Power functions
-# Tests function call overhead and stack management
 
 def factorial(n):
     if n <= 1:
@@ -12,7 +10,6 @@ def power(base, exp):
         return 1
     return base * power(base, exp - 1)
 
-# Test factorial (deep recursion)
 result = factorial(10)
 print(f"Factorial(10) = {result}")
 
@@ -22,7 +19,6 @@ print(f"Factorial(12) = {result}")
 result = factorial(15)
 print(f"Factorial(15) = {result}")
 
-# Test power function
 result = power(2, 10)
 print(f"Power(2, 10) = {result}")
 

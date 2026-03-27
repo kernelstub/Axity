@@ -32,21 +32,78 @@ pub struct Param {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Let { name: String, ty: Type, init: Expr, span: Span },
-    Assign { name: String, expr: Expr, span: Span },
-    MemberAssign { object: Expr, field: String, expr: Expr, span: Span },
-    Print { expr: Expr, span: Span },
+    Let {
+        name: String,
+        ty: Type,
+        init: Expr,
+        span: Span,
+    },
+    Assign {
+        name: String,
+        expr: Expr,
+        span: Span,
+    },
+    MemberAssign {
+        object: Expr,
+        field: String,
+        expr: Expr,
+        span: Span,
+    },
+    Print {
+        expr: Expr,
+        span: Span,
+    },
     Expr(Expr),
     Retry(Span),
-    Throw { expr: Expr, span: Span },
-    Try { body: Vec<Stmt>, catch_name: String, catch_body: Vec<Stmt>, span: Span },
-    While { cond: Expr, body: Vec<Stmt>, span: Span },
-    DoWhile { body: Vec<Stmt>, cond: Expr, span: Span },
-    ForC { init: Option<Box<Stmt>>, cond: Option<Expr>, post: Option<Box<Stmt>>, body: Vec<Stmt>, span: Span },
-    ForEach { var: String, collection: Expr, body: Vec<Stmt>, span: Span },
-    If { cond: Expr, then_body: Vec<Stmt>, else_body: Vec<Stmt>, span: Span },
-    Return { expr: Expr, span: Span },
-    Match { expr: Expr, arms: Vec<MatchArm>, default: Option<Vec<Stmt>>, span: Span },
+    Throw {
+        expr: Expr,
+        span: Span,
+    },
+    Try {
+        body: Vec<Stmt>,
+        catch_name: String,
+        catch_body: Vec<Stmt>,
+        span: Span,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    DoWhile {
+        body: Vec<Stmt>,
+        cond: Expr,
+        span: Span,
+    },
+    ForC {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        post: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    ForEach {
+        var: String,
+        collection: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    If {
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
+        span: Span,
+    },
+    Return {
+        expr: Expr,
+        span: Span,
+    },
+    Match {
+        expr: Expr,
+        arms: Vec<MatchArm>,
+        default: Option<Vec<Stmt>>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -59,16 +116,56 @@ pub enum Expr {
     ObjLit(Vec<(String, Expr)>, Span),
     Var(String, Span),
     New(String, Vec<Expr>, Span),
-    Lambda { params: Vec<Param>, ret: Type, body: Vec<Stmt>, span: Span },
-    Member { object: Box<Expr>, field: String, span: Span },
-    Index { array: Box<Expr>, index: Box<Expr>, span: Span },
-    MethodCall { object: Box<Expr>, name: String, args: Vec<Expr>, span: Span },
-    UnaryNot { expr: Box<Expr>, span: Span },
-    UnaryNeg { expr: Box<Expr>, span: Span },
-    UnaryBitNot { expr: Box<Expr>, span: Span },
-    Binary { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
-    Call { name: String, args: Vec<Expr>, span: Span },
-    CallCallee { callee: Box<Expr>, args: Vec<Expr>, span: Span },
+    Lambda {
+        params: Vec<Param>,
+        ret: Type,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    Member {
+        object: Box<Expr>,
+        field: String,
+        span: Span,
+    },
+    Index {
+        array: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
+    MethodCall {
+        object: Box<Expr>,
+        name: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    UnaryNot {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    UnaryNeg {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    UnaryBitNot {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        span: Span,
+    },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    CallCallee {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,4 +217,3 @@ pub struct Field {
     pub ty: Type,
     pub span: Span,
 }
-

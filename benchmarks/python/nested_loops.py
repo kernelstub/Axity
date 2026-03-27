@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-# Nested loops benchmark
-# Tests deeply nested iteration performance
 
 total = 0
 iterations = 0
 
-# Triple nested loop
 i = 0
 while i < 50:
     j = 0
@@ -22,7 +19,6 @@ print("Triple nested loop completed")
 print(f"Iterations: {iterations}")
 print(f"Total sum: {total}")
 
-# Nested loop with conditionals
 count = 0
 x = 0
 while x < 100:
@@ -35,7 +31,6 @@ while x < 100:
     x += 1
 print(f"Conditional nested loop count: {count}")
 
-# Nested loop with break
 found = 0
 a = 0
 while a < 100:

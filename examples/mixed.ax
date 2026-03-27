@@ -1,13 +1,19 @@
-fn add(a: int, b: int) -> int { return a + b; }
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
 
 class Counter {
     let value: int;
-    fn inc(self: Counter, d: int) -> int { self.value = self.value + d; return self.value; }
+
+    fn inc(self: Counter, d: int) -> int {
+        self.value = self.value + d;
+        return self.value;
+    }
 }
 
 let s: string = "count:";
-let xs: array<int> = [1,2,3,4];
-print(s + " " + " " + "len=" + " " + "");  // demonstrates strings; no formatting yet
+let xs: array<int> = [1, 2, 3, 4];
+print(s + "  len= ");
 print(len(xs));
 
 let c: Counter = new Counter;
@@ -28,4 +34,3 @@ while i < 2 {
     }
     i = i + 1;
 }
-
